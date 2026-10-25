@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 
+	"github.com/pocket-id/fosite"
+
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
@@ -396,6 +398,12 @@ func validateClaimMappings(mappings []OidcClaimMappingDto) error {
 	seenClaims := make(map[string]bool)
 
 	for _, mapping := range mappings {
+		// API permission keys and OIDC scopes share the same OAuth scope-token syntax
+		for _, scope := range mapping.Scope {
+			if len(scope) > 128 || !fosite.IsValidScopeToken(scope) {
+				return apperror.ValidationMessage("invalid OAuth scope in claim mapping")
+			}
+		}
 		if len(mapping.ClaimName) == 0 || len(mapping.SourceType) == 0 || len(mapping.SourceValue) == 0 {
 			return apperror.ValidationMessage("claim name, source type and source value are required")
 		}

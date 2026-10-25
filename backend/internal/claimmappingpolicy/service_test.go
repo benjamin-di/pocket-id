@@ -1041,3 +1041,14 @@ func TestRemoveClientFromClaimMappingPolicyLeavesClientsOfOtherPolicies(t *testi
 	require.NotNil(t, client.ClaimMappingPolicyId)
 	assert.Equal(t, otherPolicy.ID, *client.ClaimMappingPolicyId)
 }
+
+func TestValidateClaimMappingsOAuthScopes(t *testing.T) {
+	for _, scope := range []string{"openid", "groups", "all:use", "read:orders", "https://api.example.com/read"} {
+		t.Run(scope, func(t *testing.T) {
+			require.NoError(t, validateClaimMappings([]OidcClaimMappingDto{{ClaimName: "groups", SourceType: "user_field", SourceValue: "groups", Scope: []string{scope}, AccessToken: true}}))
+		})
+	}
+	for _, scope := range []string{"", "two scopes", "bad\nvalue", `bad"value`, `bad\value`, "nonascii-ü", strings.Repeat("a", 129)} {
+		require.Error(t, validateClaimMappings([]OidcClaimMappingDto{{ClaimName: "groups", SourceType: "user_field", SourceValue: "groups", Scope: []string{scope}, AccessToken: true}}))
+	}
+}

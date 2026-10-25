@@ -305,3 +305,16 @@ func TestClaimsServiceGetClaimMappingPolicyByClientID(t *testing.T) {
 		require.Equal(t, defaultClaimMappingPolicyId, policy.ID)
 	})
 }
+
+func TestClaimsServiceBuildClaimsAPIScope(t *testing.T) {
+	service := newClaimsService(nil, nil, "", nil, appconfig.StaticResolver{})
+	source := &userClaimsSource{
+		user: model.User{UserGroups: []model.UserGroup{{Name: "readers"}}},
+		policy: claimmappingpolicy.OidcClaimMappingPolicy{ClaimMappings: claimmappingpolicy.OidcClaimMappings{
+			{ClaimName: "groups", SourceType: claimmappingpolicy.MappingSourceUserField, SourceValue: "groups", Scope: []string{"read:orders"}, AccessToken: true},
+		}},
+	}
+	require.Equal(t, map[string]any{"groups": []string{"readers"}}, service.buildClaims(source, []string{"read:orders"}, AccessTokenType))
+	require.Empty(t, service.buildClaims(source, []string{"profile"}, AccessTokenType))
+	require.Empty(t, service.buildClaims(source, []string{"read:orders"}, IDTokenType))
+}

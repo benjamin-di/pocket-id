@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ApisService from '#lib/services/apis-service.ts';
 	import FormInput from '#lib/components/form/form-input.svelte';
 	import MultiSelect from '#lib/components/form/multi-select.svelte';
 	import SwitchWithLabel from '#lib/components/form/switch-with-label.svelte';
@@ -10,7 +11,6 @@
 	import type {
 		OidcClaimMappingDto,
 		OidcClaimMappingPolicySourceType,
-		OidcScope,
 		OidcUserField
 	} from '#lib/types/oidc-claim-mapping-policy.type.ts';
 	import { preventDefault } from '#lib/utils/event-util.ts';
@@ -63,7 +63,8 @@
 	];
 
 	// Available scopes
-	const availableScopes: OidcScope[] = [
+	let apiScopes: string[] = $state([]);
+	const standardScopes = [
 		'openid',
 		'profile',
 		'email',
@@ -72,6 +73,10 @@
 		'offline_access',
 		'groups'
 	];
+
+	const availableScopes = $derived([
+		...new Set([...standardScopes, ...apiScopes, ...mapping.scope])
+	]);
 
 	// Available source types
 	const sourceTypes = ['user_field', 'custom_claim', 'static'] as const;
@@ -117,7 +122,15 @@
 			),
 		sourceType: z.enum(['user_field', 'custom_claim', 'static']),
 		sourceValue: z.string().min(1),
-		scope: z.array(z.enum(availableScopes)).min(1),
+		scope: z
+			.array(
+				z
+					.string()
+					.min(1)
+					.max(128)
+					.regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/)
+			)
+			.min(1),
 		accessToken: z.boolean(),
 		idToken: z.boolean(),
 		userInfo: z.boolean()
@@ -139,6 +152,14 @@
 
 	let customClaimKeysSuggestions: string[] = $state([]);
 	onMount(() => {
+		new ApisService()
+			.listAll()
+			.then((apis) => {
+				apiScopes = apis.flatMap((api) => api.permissions.map((permission) => permission.key));
+			})
+			.catch(() => {
+				/* Keep standard and already selected scopes available when API listing is unavailable */
+			});
 		customClaimService.getSuggestions().then((data) => (customClaimKeysSuggestions = data));
 	});
 </script>
