@@ -22,19 +22,14 @@ jobs:
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
-      - id: gate
-        uses: benjamin-di/ci/gate@v1
-      - if: steps.gate.outputs.verified != 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - if: steps.gate.outputs.verified != 'true'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - if: steps.gate.outputs.verified != 'true'
-        working-directory: backend
+      - working-directory: backend
         env:
           POCKET_ID_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: go test -tags=exclude_frontend,unit ./...
@@ -42,21 +37,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - id: gate
-        uses: benjamin-di/ci/gate@v1
-      - if: steps.gate.outputs.verified != 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - if: steps.gate.outputs.verified != 'true'
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f
+      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f
         with:
           node-version-file: .node-version
           cache: true
           run-install: false
-      - if: steps.gate.outputs.verified != 'true'
-        run: vp -C frontend install --frozen-lockfile
-      - if: steps.gate.outputs.verified != 'true'
-        run: vp -C frontend run build
-      - if: steps.gate.outputs.verified != 'true'
-        run: vp -C frontend run check
+      - run: vp -C frontend install --frozen-lockfile
+      - run: vp -C frontend run build
+      - run: vp -C frontend run check

@@ -22,3 +22,8 @@ the frontend and runs its type checks. Tag a green `fleet` commit as
 CI result and publishes the amd64 image with source, revision and version labels;
 it never deploys a service. Consumers pin the immutable digest and rehearse upgrade
 and rollback on a disposable state copy before deployment.
+
+The deployment owner's shared CI actions are private and unavailable to a public
+fork. These workflows use public upstream actions; the release job queries the
+repository's CI run for the exact tagged commit and refuses failed or missing CI.
+It never repeats the test suite during release.

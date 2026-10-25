@@ -12,7 +12,23 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: benjamin-di/ci/require-ci@v1
+      - name: Require successful CI for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --event push --json status,conclusion --jq '.[0] | [.status,.conclusion] | @tsv')
+            if [[ "$result" == $'completed\tsuccess' ]]; then exit 0; fi
+            if [[ "$result" == completed* ]]; then
+              echo '::error::CI did not pass for the tagged commit'
+              exit 1
+            fi
+            sleep 20
+          done
+          echo '::error::No successful CI run for the tagged commit'
+          exit 1
   image:
     needs: ci
     runs-on: ubuntu-latest
