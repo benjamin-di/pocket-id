@@ -1,0 +1,36 @@
+{
+  "upstream_repository": "https://github.com/pocket-id/pocket-id",
+  "upstream_release": "v2.19.1",
+  "upstream_security_baseline": "32c4d7f7a4853b503752d00163074aa4440ae297",
+  "patches": [
+    {
+      "name": "claim-mapping-policy",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1843",
+      "revision": "d65459914f9599dd115a143f8883f09d57fabf68",
+      "retire_when": "An adopted upstream release includes claim mapping and passes the token and migration regressions"
+    },
+    {
+      "name": "authorization-code-granted-context",
+      "source": "https://github.com/pocket-id/fosite/pull/4",
+      "revision": "f790f8f2170d3d693221b2f123583e4c94b9ff44",
+      "retire_when": "An upstream Fosite release includes the fix; remove the go.mod replacement and rerun the PKCE regression"
+    },
+    {
+      "name": "api-scope-claim-mapping",
+      "source": "https://github.com/ghoudmon/pocket-id/pull/2",
+      "retire_when": "The upstream claim-mapping implementation accepts OAuth API permission keys in its API and UI"
+    },
+    {
+      "name": "cimd-auth-method-negotiation",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1874",
+      "revision": "19d756da5ea64c70e39a496eb17ef79c8458691a",
+      "retire_when": "The deployed upstream release negotiates advertised compatible CIMD authentication methods and passes the protocol/cache regressions"
+    },
+    {
+      "name": "claim-migration-order",
+      "source": "https://github.com/ghoudmon/pocket-id/pull/3",
+      "revision": "95fde311",
+      "retire_when": "Upstream uses the same ordered migration identity; preserve database-version compatibility during adoption"
+    }
+  ]
+}

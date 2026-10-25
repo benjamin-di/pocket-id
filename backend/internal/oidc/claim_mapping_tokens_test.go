@@ -25,132 +25,140 @@ import (
 )
 
 func TestClaimMappingTokensRefreshCurrentGroupsAndPolicy(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	const issuer = "https://issuer.example.com"
-	const resource = "https://mcp.example.com/all/mcp"
-	const clientID = "claims-client"
-	const userID = "claims-user"
-	const callback = "https://client.example.com/callback"
+	for _, requestedScopes := range []string{"openid offline_access groups all:use", "offline_access all:use"} {
+		t.Run(requestedScopes, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			const issuer = "https://issuer.example.com"
+			const resource = "https://mcp.example.com/all/mcp"
+			const clientID = "claims-client"
+			const userID = "claims-user"
+			const callback = "https://client.example.com/callback"
 
-	db := testutils.NewDatabaseForTest(t)
-	require.NoError(t, claimmappingpolicy.Bootstrap(t.Context(), db))
-	policy := claimmappingpolicy.OidcClaimMappingPolicy{
-		Base: model.Base{ID: "api-policy"}, Name: "API claims",
-		ClaimMappings: claimmappingpolicy.OidcClaimMappings{
-			{ClaimName: "groups", SourceType: claimmappingpolicy.MappingSourceUserField, SourceValue: "groups", Scope: []string{"groups"}, AccessToken: true},
-			{ClaimName: "person_id", SourceType: claimmappingpolicy.MappingSourceCustomClaim, SourceValue: "person_id", Scope: []string{"groups"}, AccessToken: true},
-		},
+			db := testutils.NewDatabaseForTest(t)
+			require.NoError(t, claimmappingpolicy.Bootstrap(t.Context(), db))
+			policy := claimmappingpolicy.OidcClaimMappingPolicy{
+				Base: model.Base{ID: "api-policy"}, Name: "API claims",
+				ClaimMappings: claimmappingpolicy.OidcClaimMappings{
+					{ClaimName: "groups", SourceType: claimmappingpolicy.MappingSourceUserField, SourceValue: "groups", Scope: []string{"all:use"}, AccessToken: true},
+					{ClaimName: "person_id", SourceType: claimmappingpolicy.MappingSourceCustomClaim, SourceValue: "person_id", Scope: []string{"all:use"}, AccessToken: true},
+				},
+			}
+			require.NoError(t, db.Create(&policy).Error)
+			user := model.User{Base: model.Base{ID: userID}, Username: "original-name"}
+			group := model.UserGroup{Base: model.Base{ID: "household-group"}, Name: "mcp-household", FriendlyName: "Household"}
+			require.NoError(t, db.Create(&user).Error)
+			require.NoError(t, db.Create(&group).Error)
+			require.NoError(t, db.Model(&user).Association("UserGroups").Append(&group))
+			require.NoError(t, db.Create(&model.OidcClient{
+				Base: model.Base{ID: clientID}, Name: "Claims client", IsPublic: true, PkceEnabled: true,
+				CallbackURLs: datatype.StringList{callback}, ClaimMappingPolicyId: &policy.ID,
+			}).Error)
+			key, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			apiAccess := fakeAPIAccess{allowed: map[string]map[SubjectType][]string{
+				resource: {SubjectTypeUser: {"all:use"}, SubjectTypeClient: {"all:use"}},
+			}}
+			store := NewStore(db, apiAccess)
+			provider, err := newProvider(store, nil, algTestSigner{key: key, alg: jwa.RS256()}, Config{BaseURL: issuer, TokenBaseURL: issuer, Secret: []byte("test-secret")}, nil)
+			require.NoError(t, err)
+			customClaims := fakeCustomClaimSource{claims: []model.CustomClaim{{Key: "person_id", Value: "account-a"}}}
+			claims := newClaimsService(db, customClaims, issuer, nil, appconfig.StaticResolver{})
+			handler := newTokenHandler(provider, claims, apiAccess)
+
+			requestToken := func(form url.Values, expectedStatus int) map[string]any {
+				t.Helper()
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/oidc/token", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Request = req
+				handler.token(ctx)
+				require.Equal(t, expectedStatus, recorder.Code, recorder.Body.String())
+				var body map[string]any
+				require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+				return body
+			}
+			refresh := func(previous map[string]any, expectedStatus int) map[string]any {
+				t.Helper()
+				return requestToken(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {previous["refresh_token"].(string)}, "client_id": {clientID}}, expectedStatus)
+			}
+
+			// Start after authentication and consent, using the real provider to create and redeem a PKCE-bound authorization code
+			verifier := strings.Repeat("v", 64)
+			challenge := sha256.Sum256([]byte(verifier))
+			params := url.Values{"client_id": {clientID}, "response_type": {"code"}, "redirect_uri": {callback}, "state": {"state-with-enough-entropy"}, "scope": {requestedScopes}, "resource": {resource}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/oidc/authorize?"+params.Encode(), nil)
+			authorize, err := provider.NewAuthorizeRequest(t.Context(), req)
+			require.NoError(t, err)
+			for _, scope := range strings.Fields(requestedScopes) {
+				authorize.GrantScope(scope)
+			}
+			authorize.GrantAudience(resource)
+			session := NewAuthenticatedSession(userID, "passkey", time.Now(), time.Now())
+			source, err := claims.loadUserClaimsSource(t.Context(), userID, clientID)
+			require.NoError(t, err)
+			require.Equal(t, policy.ID, source.policy.ID)
+			require.Len(t, source.policy.ClaimMappings, 2)
+			require.Equal(t, []string{"all:use"}, []string(source.policy.ClaimMappings[0].Scope))
+			require.Equal(t, []string{"mcp-household"}, claims.buildClaims(source, authorize.GetGrantedScopes(), AccessTokenType)["groups"])
+			require.NoError(t, claims.applyTokenClaims(session, authorize.GetGrantedScopes(), source))
+			response, err := provider.NewAuthorizeResponse(t.Context(), authorize, session)
+			require.NoError(t, err)
+			first := requestToken(url.Values{"grant_type": {"authorization_code"}, "code": {response.GetCode()}, "client_id": {clientID}, "redirect_uri": {callback}, "code_verifier": {verifier}}, http.StatusOK)
+			firstClaims := decodeJWTPart(t, first["access_token"].(string), 1)
+			require.Equal(t, []any{"mcp-household"}, firstClaims["groups"])
+			require.Equal(t, "account-a", firstClaims["person_id"])
+			require.Equal(t, userID, firstClaims["sub"])
+			require.Contains(t, jwtAudience(firstClaims), resource)
+			if strings.Contains(requestedScopes, "openid") {
+				require.NotContains(t, decodeJWTPart(t, first["id_token"].(string), 1), "groups")
+			} else {
+				require.NotContains(t, first, "id_token")
+			}
+
+			// A client with the same mapping policy must not receive human claims when acting as a machine
+			require.NoError(t, db.Create(&model.OidcClient{
+				Base: model.Base{ID: "machine-client"}, Name: "Machine", ClaimMappingPolicyId: &policy.ID,
+				Credentials: testClientCredentials("machine-test-secret"),
+			}).Error)
+			machine := requestToken(url.Values{"grant_type": {"client_credentials"}, "client_id": {"machine-client"}, "client_secret": {"machine-test-secret"}, "resource": {resource}, "scope": {"openid groups all:use"}}, http.StatusOK)
+			machineClaims := decodeJWTPart(t, machine["access_token"].(string), 1)
+			require.Equal(t, "client-machine-client", machineClaims["sub"])
+			require.Equal(t, []string{"all:use"}, jwtScopes(machineClaims))
+			require.NotContains(t, machineClaims, "groups")
+			require.NotContains(t, machineClaims, "person_id")
+
+			// Removing an account binding must erase it from the next token even when group membership is unchanged
+			claims.customClaims = fakeCustomClaimSource{}
+			withoutBinding := refresh(first, http.StatusOK)
+			withoutBindingClaims := decodeJWTPart(t, withoutBinding["access_token"].(string), 1)
+			require.Equal(t, []any{"mcp-household"}, withoutBindingClaims["groups"])
+			require.NotContains(t, withoutBindingClaims, "person_id")
+			claims.customClaims = customClaims
+
+			// Refresh must use current group membership while retaining the immutable subject and API grant
+			require.NoError(t, db.Model(&user).Association("UserGroups").Clear())
+			require.NoError(t, db.Model(&user).Update("username", "renamed-user").Error)
+			second := refresh(withoutBinding, http.StatusOK)
+			secondClaims := decodeJWTPart(t, second["access_token"].(string), 1)
+			require.Empty(t, secondClaims["groups"])
+			require.Equal(t, userID, secondClaims["sub"])
+			require.Equal(t, jwtAudience(firstClaims), jwtAudience(secondClaims))
+			require.Equal(t, jwtScopes(firstClaims), jwtScopes(secondClaims))
+
+			// Removing mappings must erase the old claims restored from the refresh-token session
+			require.NoError(t, db.Model(&policy).Update("claim_mappings", claimmappingpolicy.OidcClaimMappings{}).Error)
+			third := refresh(second, http.StatusOK)
+			thirdClaims := decodeJWTPart(t, third["access_token"].(string), 1)
+			require.NotContains(t, thirdClaims, "groups")
+			require.NotContains(t, thirdClaims, "person_id")
+			require.Equal(t, userID, thirdClaims["sub"])
+
+			// Disabling the user must prevent the next refresh from minting a new token
+			require.NoError(t, db.Model(&user).Update("disabled", true).Error)
+			require.Equal(t, "invalid_grant", refresh(third, http.StatusBadRequest)["error"])
+		})
 	}
-	require.NoError(t, db.Create(&policy).Error)
-	user := model.User{Base: model.Base{ID: userID}, Username: "original-name"}
-	group := model.UserGroup{Base: model.Base{ID: "household-group"}, Name: "mcp-household", FriendlyName: "Household"}
-	require.NoError(t, db.Create(&user).Error)
-	require.NoError(t, db.Create(&group).Error)
-	require.NoError(t, db.Model(&user).Association("UserGroups").Append(&group))
-	require.NoError(t, db.Create(&model.OidcClient{
-		Base: model.Base{ID: clientID}, Name: "Claims client", IsPublic: true, PkceEnabled: true,
-		CallbackURLs: datatype.StringList{callback}, ClaimMappingPolicyId: &policy.ID,
-	}).Error)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	apiAccess := fakeAPIAccess{allowed: map[string]map[SubjectType][]string{
-		resource: {SubjectTypeUser: {"all:use"}, SubjectTypeClient: {"all:use"}},
-	}}
-	store := NewStore(db, apiAccess)
-	provider, err := newProvider(store, nil, algTestSigner{key: key, alg: jwa.RS256()}, Config{BaseURL: issuer, TokenBaseURL: issuer, Secret: []byte("test-secret")}, nil)
-	require.NoError(t, err)
-	customClaims := fakeCustomClaimSource{claims: []model.CustomClaim{{Key: "person_id", Value: "account-a"}}}
-	claims := newClaimsService(db, customClaims, issuer, nil, appconfig.StaticResolver{})
-	handler := newTokenHandler(provider, claims, apiAccess)
-
-	requestToken := func(form url.Values, expectedStatus int) map[string]any {
-		t.Helper()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/oidc/token", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		recorder := httptest.NewRecorder()
-		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = req
-		handler.token(ctx)
-		require.Equal(t, expectedStatus, recorder.Code, recorder.Body.String())
-		var body map[string]any
-		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
-		return body
-	}
-	refresh := func(previous map[string]any, expectedStatus int) map[string]any {
-		t.Helper()
-		return requestToken(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {previous["refresh_token"].(string)}, "client_id": {clientID}}, expectedStatus)
-	}
-
-	// Start after authentication and consent, using the real provider to create and redeem a PKCE-bound authorization code
-	verifier := strings.Repeat("v", 64)
-	challenge := sha256.Sum256([]byte(verifier))
-	params := url.Values{"client_id": {clientID}, "response_type": {"code"}, "redirect_uri": {callback}, "state": {"state-with-enough-entropy"}, "scope": {"openid offline_access groups all:use"}, "resource": {resource}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/oidc/authorize?"+params.Encode(), nil)
-	authorize, err := provider.NewAuthorizeRequest(t.Context(), req)
-	require.NoError(t, err)
-	for _, scope := range []string{"openid", "offline_access", "groups", "all:use"} {
-		authorize.GrantScope(scope)
-	}
-	authorize.GrantAudience(resource)
-	session := NewAuthenticatedSession(userID, "passkey", time.Now(), time.Now())
-	source, err := claims.loadUserClaimsSource(t.Context(), userID, clientID)
-	require.NoError(t, err)
-	require.Equal(t, policy.ID, source.policy.ID)
-	require.Len(t, source.policy.ClaimMappings, 2)
-	require.Equal(t, []string{"groups"}, []string(source.policy.ClaimMappings[0].Scope))
-	require.Equal(t, []string{"mcp-household"}, claims.buildClaims(source, authorize.GetGrantedScopes(), AccessTokenType)["groups"])
-	require.NoError(t, claims.applyTokenClaims(session, authorize.GetGrantedScopes(), source))
-	response, err := provider.NewAuthorizeResponse(t.Context(), authorize, session)
-	require.NoError(t, err)
-	first := requestToken(url.Values{"grant_type": {"authorization_code"}, "code": {response.GetCode()}, "client_id": {clientID}, "redirect_uri": {callback}, "code_verifier": {verifier}}, http.StatusOK)
-	firstClaims := decodeJWTPart(t, first["access_token"].(string), 1)
-	require.Equal(t, []any{"mcp-household"}, firstClaims["groups"])
-	require.Equal(t, "account-a", firstClaims["person_id"])
-	require.Equal(t, userID, firstClaims["sub"])
-	require.Contains(t, jwtAudience(firstClaims), resource)
-	require.NotContains(t, decodeJWTPart(t, first["id_token"].(string), 1), "groups")
-
-	// A client with the same mapping policy must not receive human claims when acting as a machine
-	require.NoError(t, db.Create(&model.OidcClient{
-		Base: model.Base{ID: "machine-client"}, Name: "Machine", ClaimMappingPolicyId: &policy.ID,
-		Credentials: testClientCredentials("machine-test-secret"),
-	}).Error)
-	machine := requestToken(url.Values{"grant_type": {"client_credentials"}, "client_id": {"machine-client"}, "client_secret": {"machine-test-secret"}, "resource": {resource}, "scope": {"openid groups all:use"}}, http.StatusOK)
-	machineClaims := decodeJWTPart(t, machine["access_token"].(string), 1)
-	require.Equal(t, "client-machine-client", machineClaims["sub"])
-	require.Equal(t, []string{"all:use"}, jwtScopes(machineClaims))
-	require.NotContains(t, machineClaims, "groups")
-	require.NotContains(t, machineClaims, "person_id")
-
-	// Removing an account binding must erase it from the next token even when group membership is unchanged
-	claims.customClaims = fakeCustomClaimSource{}
-	withoutBinding := refresh(first, http.StatusOK)
-	withoutBindingClaims := decodeJWTPart(t, withoutBinding["access_token"].(string), 1)
-	require.Equal(t, []any{"mcp-household"}, withoutBindingClaims["groups"])
-	require.NotContains(t, withoutBindingClaims, "person_id")
-	claims.customClaims = customClaims
-
-	// Refresh must use current group membership while retaining the immutable subject and API grant
-	require.NoError(t, db.Model(&user).Association("UserGroups").Clear())
-	require.NoError(t, db.Model(&user).Update("username", "renamed-user").Error)
-	second := refresh(withoutBinding, http.StatusOK)
-	secondClaims := decodeJWTPart(t, second["access_token"].(string), 1)
-	require.Empty(t, secondClaims["groups"])
-	require.Equal(t, userID, secondClaims["sub"])
-	require.Equal(t, jwtAudience(firstClaims), jwtAudience(secondClaims))
-	require.Equal(t, jwtScopes(firstClaims), jwtScopes(secondClaims))
-
-	// Removing mappings must erase the old claims restored from the refresh-token session
-	require.NoError(t, db.Model(&policy).Update("claim_mappings", claimmappingpolicy.OidcClaimMappings{}).Error)
-	third := refresh(second, http.StatusOK)
-	thirdClaims := decodeJWTPart(t, third["access_token"].(string), 1)
-	require.NotContains(t, thirdClaims, "groups")
-	require.NotContains(t, thirdClaims, "person_id")
-	require.Equal(t, userID, thirdClaims["sub"])
-
-	// Disabling the user must prevent the next refresh from minting a new token
-	require.NoError(t, db.Model(&user).Update("disabled", true).Error)
-	require.Equal(t, "invalid_grant", refresh(third, http.StatusBadRequest)["error"])
 }
 
 func TestClaimMappingAccessTokenDisclosure(t *testing.T) {
