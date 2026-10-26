@@ -31,6 +31,18 @@
       "source": "https://github.com/ghoudmon/pocket-id/pull/3",
       "revision": "95fde311",
       "retire_when": "Upstream uses the same ordered migration identity; preserve database-version compatibility during adoption"
+    },
+    {
+      "name": "initial-user-groups",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1877",
+      "revision": "a428b884",
+      "retire_when": "An adopted upstream release supports initial groups in Add User and preserves memberships on later profile edits"
+    },
+    {
+      "name": "filter-users-by-group",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1878",
+      "revision": "0cd96687",
+      "retire_when": "An adopted upstream release filters user membership before pagination and passes the composed-filter and browser regressions"
     }
   ]
 }
