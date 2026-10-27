@@ -43,6 +43,12 @@
       "source": "https://github.com/pocket-id/pocket-id/pull/1878",
       "revision": "0cd96687",
       "retire_when": "An adopted upstream release filters user membership before pagination and passes the composed-filter and browser regressions"
+    },
+    {
+      "name": "access-token-lifetime-rounding",
+      "source": "https://github.com/pocket-id/fosite/pull/5",
+      "revision": "72a8e3b70b4468b3939198e041997538f8346d53",
+      "retire_when": "An adopted upstream Fosite release truncates access-token expiration consistently and passes the fractional-second authorization-code and refresh regressions; preserve the consented-grant fix when removing the replacement"
     }
   ]
 }
