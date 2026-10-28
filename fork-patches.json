@@ -12,8 +12,8 @@
     {
       "name": "authorization-code-granted-context",
       "source": "https://github.com/pocket-id/fosite/pull/4",
-      "revision": "f790f8f2170d3d693221b2f123583e4c94b9ff44",
-      "retire_when": "An upstream Fosite release includes the fix; remove the go.mod replacement and rerun the PKCE regression"
+      "revision": "f7ee800e84b6c9fd54503fa424b9b896830ead1e",
+      "retire_when": "An upstream Fosite release restores consented scopes and audiences before authorization-code and device-code token claims are built; remove the go.mod replacement and rerun both protocol regressions"
     },
     {
       "name": "api-scope-claim-mapping",
@@ -47,8 +47,8 @@
     {
       "name": "access-token-lifetime-rounding",
       "source": "https://github.com/pocket-id/fosite/pull/5",
-      "revision": "c649be5c2e64dc52ca089d7f4f14045004bf04fc",
-      "retire_when": "An adopted upstream Fosite release truncates access-token expiration consistently, including the device-code handler, and passes the fractional-second authorization-code, refresh and device-code regressions; preserve the consented-grant fix when removing the replacement"
+      "revision": "ddfd661f576947f0d9432da7fb687b5ef7678ee2",
+      "retire_when": "An adopted upstream Fosite release truncates access-token expiration consistently across every supported grant, including device code and JWT bearer, and passes the fractional-second regressions; preserve the consented-grant fix when removing the replacement"
     }
   ]
 }
