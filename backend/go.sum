@@ -46,10 +46,8 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 h1:OKEfbf2tcfsF2pBk/S9QqNpo6ala
 github.com/aws/aws-sdk-go-v2/service/sts v1.51.4/go.mod h1:mCd6qGo9b8hTtfjgsmNkFlzwjyce4owd7HDVFnCLXhM=
 github.com/aws/smithy-go v1.28.5 h1:OqbqKtzY9NUnr2yAe9+hiTdFb20tNaK/lI0PMOGXX9k=
 github.com/aws/smithy-go v1.28.5/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
-github.com/benjamin-di/fosite v1.4.4-0.20261025143830-f790f8f2170d h1:znawAobX1yYIEnTkXnTLuREjWSMMPQBc0PVdiVG4IlA=
-github.com/benjamin-di/fosite v1.4.4-0.20261025143830-f790f8f2170d/go.mod h1:1zQyPDsHITYiDgzNEVvZcDho56KLb+MWSP6OM3u3s1c=
-github.com/benjamin-di/fosite v1.4.4-0.20261027110121-72a8e3b70b44 h1:LyDkkfCVEKN3ozUvVQUcxYROjWU4XAhcdT5yKC6s5wg=
-github.com/benjamin-di/fosite v1.4.4-0.20261027110121-72a8e3b70b44/go.mod h1:1zQyPDsHITYiDgzNEVvZcDho56KLb+MWSP6OM3u3s1c=
+github.com/benjamin-di/fosite v1.4.4-0.20261028014453-c649be5c2e64 h1:qgsrD6uxjlKR6OXEErbxL7diMcpc06iqkip+b1dgrIg=
+github.com/benjamin-di/fosite v1.4.4-0.20261028014453-c649be5c2e64/go.mod h1:1zQyPDsHITYiDgzNEVvZcDho56KLb+MWSP6OM3u3s1c=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/bits-and-blooms/bitset v1.20.0/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
