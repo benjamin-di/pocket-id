@@ -12,6 +12,7 @@ scope matching and per-client policy assignment. Built-in token claims, resource
 audiences and machine/user separation remain owned by their existing layers.
 
 PKCE accepts and advertises only `S256`, following RFC 9700 section 4.8.2.
+The proposal is tracked in [upstream issue #1886](https://github.com/pocket-id/pocket-id/issues/1886).
 This intentionally removes the legacy `plain` compatibility introduced after
 upstream issue #1534; that closed issue is context, not an upstream S256-only
 implementation. Both explicit `plain` and an omitted method with a challenge are
