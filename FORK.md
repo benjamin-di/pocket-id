@@ -11,6 +11,13 @@ API-scope mappings use the provider's existing OAuth scope parser, exact granted
 scope matching and per-client policy assignment. Built-in token claims, resource
 audiences and machine/user separation remain owned by their existing layers.
 
+PKCE accepts and advertises only `S256`, following RFC 9700 section 4.8.2.
+This intentionally removes the legacy `plain` compatibility introduced after
+upstream issue #1534; that closed issue is context, not an upstream S256-only
+implementation. Both explicit `plain` and an omitted method with a challenge are
+rejected. Confidential clients without a PKCE requirement, refresh grants,
+device authorization and client credentials retain their existing behavior.
+
 Before updating upstream, review each patch's retirement condition. Adopt merged
 upstream implementations and delete the corresponding local patch. Keep the
 PKCE, refresh, disclosure, machine-token and migration regressions passing.

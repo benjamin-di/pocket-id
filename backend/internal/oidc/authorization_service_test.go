@@ -862,7 +862,7 @@ func TestValidateClientPKCERequirement(t *testing.T) {
 	pkceClient := Client{OidcClient: model.OidcClient{Base: model.Base{ID: "c"}, PkceEnabled: true}}
 	plainClient := Client{OidcClient: model.OidcClient{Base: model.Base{ID: "c"}}}
 
-	withChallenge := newTestAuthorizeRequesterWithForm("with-challenge", "c", url.Values{"code_challenge": {"abc123"}})
+	withChallenge := newTestAuthorizeRequesterWithForm("with-challenge", "c", url.Values{"code_challenge": {"abc123"}, "code_challenge_method": {"S256"}})
 	withoutChallenge := newTestAuthorizeRequesterWithForm("without-challenge", "c", url.Values{})
 
 	require.NoError(t, validateClientPKCERequirement(plainClient, withoutChallenge))
@@ -900,7 +900,7 @@ func TestAuthorizationServiceAuthorizeEnforcesPerClientPKCE(t *testing.T) {
 	require.ErrorIs(t, err, fosite.ErrInvalidRequest)
 
 	// With a code_challenge the PKCE gate passes and the (already-consented) request is granted.
-	withChallenge := newTestAuthorizeRequesterWithForm("authz-pkce", clientID, url.Values{"code_challenge": {"abc123"}})
+	withChallenge := newTestAuthorizeRequesterWithForm("authz-pkce", clientID, url.Values{"code_challenge": {"abc123"}, "code_challenge_method": {"S256"}})
 	withChallenge.(*fosite.AuthorizeRequest).Client = pkceClient
 	result, err := service.authorize(t.Context(), authorizeInput{
 		userID:             userID,
@@ -909,6 +909,24 @@ func TestAuthorizationServiceAuthorizeEnforcesPerClientPKCE(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, result.RequiresInteraction)
+
+	// Reject unusable PKCE methods before asking an anonymous user to authenticate, including when PKCE is optional
+	for _, public := range []bool{true, false} {
+		for _, method := range []string{"plain", "", "S512"} {
+			requester := newTestAuthorizeRequesterWithForm("authz-invalid-method", clientID, url.Values{
+				"code_challenge": {"abc123"}, "code_challenge_method": {method},
+			})
+			requester.(*fosite.AuthorizeRequest).Client = Client{OidcClient: model.OidcClient{
+				Base: model.Base{ID: clientID}, IsPublic: public,
+			}}
+			result, err := service.authorize(t.Context(), authorizeInput{requester: requester})
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest, "public=%t method=%q", public, method)
+			require.False(t, result.RequiresInteraction)
+		}
+	}
+	var interactions int64
+	require.NoError(t, db.Model(&InteractionSession{}).Count(&interactions).Error)
+	require.Zero(t, interactions)
 }
 
 func TestAuthorizationServiceAuthorizePARRequiredClient(t *testing.T) {

@@ -49,6 +49,12 @@
       "source": "https://github.com/pocket-id/fosite/pull/5",
       "revision": "ddfd661f576947f0d9432da7fb687b5ef7678ee2",
       "retire_when": "An adopted upstream Fosite release truncates access-token expiration consistently across every supported grant, including device code and JWT bearer, and passes the fractional-second regressions; preserve the consented-grant fix when removing the replacement"
+    },
+    {
+      "name": "pkce-s256-only",
+      "source": "https://www.rfc-editor.org/rfc/rfc9700.html#section-4.8.2",
+      "related_upstream_issue": "https://github.com/pocket-id/pocket-id/issues/1534",
+      "retire_when": "An adopted upstream release accepts and advertises S256-only PKCE, either by default or through a supported policy setting; retain explicit and implicit plain rejection and verifier regressions"
     }
   ]
 }
