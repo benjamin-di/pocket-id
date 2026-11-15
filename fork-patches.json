@@ -1,0 +1,74 @@
+{
+  "upstream_repository": "https://github.com/pocket-id/pocket-id",
+  "upstream_release": "v2.19.2",
+  "patches": [
+    {
+      "name": "claim-mapping-policy",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1843",
+      "revision": "d65459914f9599dd115a143f8883f09d57fabf68",
+      "retire_when": "An adopted upstream release includes claim mapping and passes the token and migration regressions"
+    },
+    {
+      "name": "authorization-code-granted-context",
+      "source": "https://github.com/pocket-id/fosite/pull/4",
+      "revision": "f7ee800e84b6c9fd54503fa424b9b896830ead1e",
+      "retire_when": "An upstream Fosite release restores consented scopes and audiences before authorization-code and device-code token claims are built; remove the go.mod replacement and rerun both protocol regressions"
+    },
+    {
+      "name": "api-scope-claim-mapping",
+      "source": "https://github.com/ghoudmon/pocket-id/pull/2",
+      "retire_when": "The upstream claim-mapping implementation accepts OAuth API permission keys in its API and UI"
+    },
+    {
+      "name": "claim-migration-order",
+      "source": "https://github.com/ghoudmon/pocket-id/pull/3",
+      "revision": "95fde311",
+      "retire_when": "Upstream uses the same ordered migration identity; preserve database-version compatibility during adoption"
+    },
+    {
+      "name": "initial-user-groups",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1877",
+      "revision": "a428b884",
+      "retire_when": "An adopted upstream release supports initial groups in Add User and preserves memberships on later profile edits"
+    },
+    {
+      "name": "filter-users-by-group",
+      "source": "https://github.com/pocket-id/pocket-id/pull/1878",
+      "revision": "0cd96687",
+      "retire_when": "An adopted upstream release filters user membership before pagination and passes the composed-filter and browser regressions"
+    },
+    {
+      "name": "access-token-lifetime-rounding",
+      "source": "https://github.com/pocket-id/fosite/pull/5",
+      "revision": "ddfd661f576947f0d9432da7fb687b5ef7678ee2",
+      "retire_when": "An adopted upstream Fosite release truncates access-token expiration consistently across every supported grant, including device code and JWT bearer, and passes the fractional-second regressions; preserve the consented-grant fix when removing the replacement"
+    },
+    {
+      "name": "pkce-s256-only",
+      "source": "https://github.com/pocket-id/pocket-id/issues/1886",
+      "standard": "https://www.rfc-editor.org/rfc/rfc9700.html#section-4.8.2",
+      "related_upstream_issue": "https://github.com/pocket-id/pocket-id/issues/1534",
+      "retire_when": "An adopted upstream release accepts and advertises S256-only PKCE, either by default or through a supported policy setting; retain explicit and implicit plain rejection and verifier regressions"
+    },
+    {
+      "name": "upstream-cimd-draft-03",
+      "source": "https://github.com/pocket-id/pocket-id/commit/5194ffc4c873183f9f1e1d35585afa5d505d2270",
+      "origins": [
+        "3646c5d2aa8768a5d9f74ec4f04a2b9aa82f6c7a",
+        "69d231063325e35feb86d0a35ecbfed7408b63a3",
+        "5194ffc4c873183f9f1e1d35585afa5d505d2270"
+      ],
+      "adaptation": "Use stable trailing-slash resource normalization because the built-in MCP API is absent; use the stable token-handler constructor. Unrelated disabled-client and user-session tests are excluded.",
+      "retire_when": "The adopted stable release includes these upstream protocol, cache and revocation changes and passes affected CIMD/PKCE regressions."
+    }
+  ],
+  "fosite_source": {
+    "upstream_release": "v1.6.0",
+    "baseline": "ecc4871dd4cec7de90e5b9ec454e8d3c62989c11",
+    "consumed_commit": "cc8203cfa95d92fc4bc11c369b6302682d3e61e0",
+    "retained_open_fixes": [
+      "https://github.com/pocket-id/fosite/pull/4",
+      "https://github.com/pocket-id/fosite/pull/5"
+    ]
+  }
+}
