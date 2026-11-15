@@ -2,22 +2,13 @@ package oidc
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v4/jwa"
-	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/pocket-id/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +38,7 @@ func TestCIMDClientLimitsResponseHeaders(t *testing.T) {
 			// Use the production outbound transport and CIMD client construction
 			clients, err := outbound.New(&common.EnvConfigSchema{OutboundAllowedHostsClientMetadata: allowlist})
 			require.NoError(t, err)
-			resolver := newCIMDClientResolver(nil, cimdResolverConfig{transport: clients.Transport(outbound.PurposeClientMetadata)})
+			resolver := newCIMDClientResolver(&Store{}, cimdResolverConfig{transport: clients.Transport(outbound.PurposeClientMetadata)})
 			provider, ok := resolver.resolver.Fetcher.(fosite.CIMDSecureHTTPClientProvider)
 			require.True(t, ok)
 			client := provider.CIMDHTTPClient()
@@ -74,6 +65,21 @@ func TestCIMDClientLimitsResponseHeaders(t *testing.T) {
 	}
 }
 
+// A client ID the outbound policy blocks will never become reachable, so it must not be answered as a temporary failure that invites a retry
+func TestCIMDClientBlockedDestinationIsNotTemporary(t *testing.T) {
+	clients, err := outbound.New(&common.EnvConfigSchema{})
+	require.NoError(t, err)
+	store := NewStore(testutils.NewDatabaseForTest(t), nil)
+	resolver := newCIMDClientResolver(store, cimdResolverConfig{
+		getURLAllowlist: func() []string { return []string{"*"} },
+		transport:       clients.Transport(outbound.PurposeClientMetadata),
+	})
+
+	_, err = resolver.ResolveClient(t.Context(), "https://10.0.0.1/oauth/client", store.GetClient)
+	require.ErrorIs(t, err, fosite.ErrCIMDFetchRefused)
+	require.NotErrorIs(t, err, fosite.ErrCIMDTemporarilyUnavailable)
+}
+
 func TestBuildClientFromMetadata(t *testing.T) {
 	const id = "https://app.example.com/oauth/client"
 
@@ -98,14 +104,6 @@ func TestBuildClientFromMetadata(t *testing.T) {
 		assert.Empty(t, c.Credentials.FederatedIdentities)
 		assert.Equal(t, model.DefaultAccessTokenDurationMinutes, c.AccessTokenDurationMinutes)
 		assert.Equal(t, model.DefaultRefreshTokenDurationMinutes, c.RefreshTokenDurationMinutes)
-	})
-
-	t.Run("authenticated clients are rejected", func(t *testing.T) {
-		for _, m := range []string{"private_key_jwt", "client_secret_basic", "client_secret_post", "client_secret_jwt"} { //nolint:gosec // G101 false positive: authentication method names, not credentials
-			doc := &fosite.ClientMetadataDocument{ClientID: id, TokenEndpointAuthMethod: m}
-			_, err := buildClientFromMetadata(doc, id)
-			require.Errorf(t, err, "method %q", m)
-		}
 	})
 
 	t.Run("unsupported grant types are dropped", func(t *testing.T) {
@@ -153,7 +151,8 @@ func TestCIMDPolicyValidate(t *testing.T) {
 		{name: "unsupported grant types are ignored", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}},
 		{name: "client credentials cannot initiate authorization", grantTypes: []string{"client_credentials"}, wantError: "must enable"},
 		{name: "refresh token cannot initiate authorization", grantTypes: []string{"refresh_token"}, wantError: "must enable"},
-		{name: "implicit response is rejected", grantTypes: []string{"authorization_code"}, responseTypes: []string{"token"}, wantError: "unsupported response_type"},
+		{name: "unsupported response types are ignored", responseTypes: []string{"code", "token"}},
+		{name: "response types without code are rejected", responseTypes: []string{"token"}, wantError: "response type"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := policy.ValidateCIMDClient(t.Context(), &fosite.ClientMetadataDocument{
@@ -169,10 +168,42 @@ func TestCIMDPolicyValidate(t *testing.T) {
 		})
 	}
 
-	t.Run("omitted authentication method is rejected", func(t *testing.T) {
-		err := policy.ValidateCIMDClient(t.Context(), &fosite.ClientMetadataDocument{})
-		require.ErrorContains(t, err, "token_endpoint_auth_method")
-	})
+	for _, test := range []struct {
+		name      string
+		method    string
+		supported []string
+		wantError bool
+	}{
+		{name: "omitted authentication methods declare a public client"},
+		{name: "preferred private_key_jwt without a supported list is rejected", method: "private_key_jwt", wantError: true},
+		{name: "preferred private_key_jwt with none in the supported list is accepted", method: "private_key_jwt", supported: []string{"none", "private_key_jwt"}},
+		{name: "supported list without none is rejected", method: "none", supported: []string{"private_key_jwt"}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := policy.ValidateCIMDClient(t.Context(), &fosite.ClientMetadataDocument{
+				TokenEndpointAuthMethod:           test.method,
+				TokenEndpointAuthMethodsSupported: test.supported,
+			})
+			if test.wantError {
+				require.ErrorContains(t, err, "token endpoint authentication method")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// A client ID is the audience of the client's login tokens, so it must not be one an API accepts
+func TestCIMDPolicyRejectsAPIAudienceAsClientID(t *testing.T) {
+	const audience = "https://api.example.com/orders"
+	policy := cimdPolicy{
+		getURLAllowlist: func() []string { return []string{"*"} },
+		apiAccess:       userAccess(map[string][]string{audience: nil}),
+	}
+
+	require.ErrorContains(t, policy.AllowCIMDClient(t.Context(), audience), "audience of an API")
+	require.ErrorContains(t, policy.AllowCIMDClient(t.Context(), audience+"/"), "audience of an API")
+	require.NoError(t, policy.AllowCIMDClient(t.Context(), "https://app.example.com/oauth/client"))
 }
 
 func TestMetadataClientChanges(t *testing.T) {
@@ -403,17 +434,19 @@ func TestGetClient_MetadataDocument(t *testing.T) {
 		assert.False(t, stored.IsMetadataDocument())
 	})
 
-	t.Run("no-store metadata is rejected and not persisted", func(t *testing.T) {
+	// Clients are persisted, so a document that forbids caching is kept for the minimum lifetime instead of being refused
+	t.Run("no-store metadata is cached for the minimum lifetime", func(t *testing.T) {
 		resp := testutils.NewMockResponse(http.StatusOK, body) //nolint:bodyclose // mock response, no real body
 		resp.Header.Set("Cache-Control", "no-store")
 		s := newMetadataStore(t, map[string]*http.Response{id: resp})
 
 		_, err := s.GetClient(t.Context(), id)
-		require.ErrorIs(t, err, fosite.ErrInvalidClient)
+		require.NoError(t, err)
 
-		var count int64
-		require.NoError(t, s.db.Model(&model.OidcClient{}).Where("id = ?", id).Count(&count).Error)
-		assert.Zero(t, count)
+		stored, err := s.firstClientByID(t.Context(), id)
+		require.NoError(t, err)
+		require.NotNil(t, stored.MetadataExpiresAt)
+		assert.WithinDuration(t, time.Now().Add(time.Minute), stored.MetadataExpiresAt.ToTime(), 10*time.Second)
 	})
 
 	t.Run("private_key_jwt metadata is rejected and not persisted", func(t *testing.T) {
@@ -427,6 +460,23 @@ func TestGetClient_MetadataDocument(t *testing.T) {
 		var count int64
 		require.NoError(t, s.db.Model(&model.OidcClient{}).Where("id = ?", id).Count(&count).Error)
 		assert.Zero(t, count)
+	})
+
+	t.Run("ChatGPT's metadata resolves to a public client", func(t *testing.T) {
+		const chatGPTID = "https://chatgpt.com/oauth/client.json"
+		chatGPTBody := `{"client_id":"https://chatgpt.com/oauth/client.json","client_uri":"https://chatgpt.com/","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:jwt-bearer"],"response_types":["code"],"client_name":"ChatGPT","logo_uri":"https://persistent.oaistatic.com/sonic/misc/openai-logo.png","token_endpoint_auth_signing_alg":"RS256","jwks_uri":"https://chatgpt.com/oauth/jwks.json"}` //nolint:gosec // G101 false positive: authentication method names, not credentials
+		resp := testutils.NewMockResponse(http.StatusOK, chatGPTBody)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   //nolint:bodyclose // mock response, no real body
+		s := newMetadataStore(t, map[string]*http.Response{chatGPTID: resp})
+
+		_, err := s.GetClient(t.Context(), chatGPTID)
+		require.NoError(t, err)
+
+		stored, err := s.firstClientByID(t.Context(), chatGPTID)
+		require.NoError(t, err)
+		assert.Equal(t, "ChatGPT", stored.Name)
+		assert.True(t, stored.IsPublic)
+		assert.True(t, stored.PkceEnabled)
+		assert.Equal(t, []string{"authorization_code", "refresh_token"}, []string(stored.MetadataGrantTypes))
 	})
 
 	t.Run("cached authenticated metadata client is rejected", func(t *testing.T) {
@@ -535,6 +585,7 @@ func TestGetClient_MetadataDocument(t *testing.T) {
 		require.NoError(t, s.db.Exec(
 			"INSERT INTO user_authorized_oidc_clients (client_id, user_id, scope, last_used_at) VALUES (?, ?, ?, ?)",
 			id, "user-1", "openid", time.Now()).Error)
+		require.NoError(t, s.CreateRefreshTokenSession(t.Context(), "refresh", "", newTestRequester("request", id, "user-1", "")))
 
 		_, err := s.GetClient(t.Context(), id)
 		require.NoError(t, err)
@@ -543,6 +594,36 @@ func TestGetClient_MetadataDocument(t *testing.T) {
 		require.NoError(t, s.db.Table("user_authorized_oidc_clients").
 			Where("client_id = ?", id).Count(&consent).Error)
 		assert.Zero(t, consent, "consent must not survive a redirect_uris change")
+		_, err = s.GetRefreshTokenSession(t.Context(), "refresh", nil)
+		require.ErrorIs(t, err, fosite.ErrNotFound, "tokens must not survive the consent they were issued under")
+	})
+
+	// A document that names another client ID means the URL no longer belongs to the client users consented to
+	t.Run("client_id mismatch revokes consent and tokens", func(t *testing.T) {
+		resp := testutils.NewMockResponse(http.StatusOK, `{"client_id":"https://8.8.8.8/oauth/other"}`) //nolint:bodyclose // mock response, no real body
+		s := newMetadataStore(t, map[string]*http.Response{id: resp})
+
+		stale := datatype.DateTime(time.Now().Add(-time.Hour))
+		seed := model.OidcClient{
+			Base: model.Base{ID: id}, Name: "App", IsPublic: true, PkceEnabled: true,
+			ClientType:        model.OidcClientTypeCIMD,
+			MetadataExpiresAt: &stale,
+		}
+		require.NoError(t, s.db.Create(&seed).Error)
+		require.NoError(t, s.db.Exec(
+			"INSERT INTO user_authorized_oidc_clients (client_id, user_id, scope, last_used_at) VALUES (?, ?, ?, ?)",
+			id, "user-1", "openid", time.Now()).Error)
+		require.NoError(t, s.CreateRefreshTokenSession(t.Context(), "refresh", "", newTestRequester("request", id, "user-1", "")))
+
+		_, err := s.GetClient(t.Context(), id)
+		require.ErrorIs(t, err, fosite.ErrCIMDClientIDMismatch)
+
+		var consent int64
+		require.NoError(t, s.db.Table("user_authorized_oidc_clients").
+			Where("client_id = ?", id).Count(&consent).Error)
+		assert.Zero(t, consent)
+		_, err = s.GetRefreshTokenSession(t.Context(), "refresh", nil)
+		require.ErrorIs(t, err, fosite.ErrNotFound)
 	})
 
 	t.Run("failed consent revocation rolls back refreshed metadata", func(t *testing.T) {
@@ -758,16 +839,17 @@ func TestGetClient_MetadataFailuresAreNotPersisted(t *testing.T) {
 		name     string
 		response *http.Response
 	}{
-		{"404", testutils.NewMockResponse(http.StatusNotFound, `{}`)},                                                                                               //nolint:bodyclose // mock
-		{"500", testutils.NewMockResponse(http.StatusInternalServerError, `{}`)},                                                                                    //nolint:bodyclose // mock
-		{"204", testutils.NewMockResponse(http.StatusNoContent, ``)},                                                                                                //nolint:bodyclose // mock
-		{"invalid JSON", testutils.NewMockResponse(http.StatusOK, `{not json`)},                                                                                     //nolint:bodyclose // mock
-		{"truncated JSON", testutils.NewMockResponse(http.StatusOK, `{"client_id":`)},                                                                               //nolint:bodyclose // mock
-		{"empty body", testutils.NewMockResponse(http.StatusOK, ``)},                                                                                                //nolint:bodyclose // mock
-		{"null body", testutils.NewMockResponse(http.StatusOK, `null`)},                                                                                             //nolint:bodyclose // mock
-		{"client_id mismatch", testutils.NewMockResponse(http.StatusOK, `{"client_id":"https://evil/x"}`)},                                                          //nolint:bodyclose // mock
-		{"wrong client_id type", testutils.NewMockResponse(http.StatusOK, `{"client_id":123}`)},                                                                     //nolint:bodyclose // mock
-		{"oversize document", testutils.NewMockResponse(http.StatusOK, `{"client_id":"https://8.8.8.8/oauth/client","padding":"`+strings.Repeat("a", 6*1024)+`"}`)}, //nolint:bodyclose // mock
+		{"404", testutils.NewMockResponse(http.StatusNotFound, `{}`)},                                                                                                       //nolint:bodyclose // mock
+		{"500", testutils.NewMockResponse(http.StatusInternalServerError, `{}`)},                                                                                            //nolint:bodyclose // mock
+		{"204", testutils.NewMockResponse(http.StatusNoContent, ``)},                                                                                                        //nolint:bodyclose // mock
+		{"invalid JSON", testutils.NewMockResponse(http.StatusOK, `{not json`)},                                                                                             //nolint:bodyclose // mock
+		{"truncated JSON", testutils.NewMockResponse(http.StatusOK, `{"client_id":`)},                                                                                       //nolint:bodyclose // mock
+		{"empty body", testutils.NewMockResponse(http.StatusOK, ``)},                                                                                                        //nolint:bodyclose // mock
+		{"null body", testutils.NewMockResponse(http.StatusOK, `null`)},                                                                                                     //nolint:bodyclose // mock
+		{"client_id mismatch", testutils.NewMockResponse(http.StatusOK, `{"client_id":"https://evil/x"}`)},                                                                  //nolint:bodyclose // mock
+		{"empty grant_types", testutils.NewMockResponse(http.StatusOK, `{"client_id":"https://8.8.8.8/oauth/client","redirect_uris":["https://app/cb"],"grant_types":[]}`)}, //nolint:bodyclose // mock
+		{"wrong client_id type", testutils.NewMockResponse(http.StatusOK, `{"client_id":123}`)},                                                                             //nolint:bodyclose // mock
+		{"oversize document", testutils.NewMockResponse(http.StatusOK, `{"client_id":"https://8.8.8.8/oauth/client","padding":"`+strings.Repeat("a", 6*1024)+`"}`)},         //nolint:bodyclose // mock
 	}
 
 	for _, tc := range cases {
@@ -787,131 +869,4 @@ func TestGetClient_MetadataFailuresAreNotPersisted(t *testing.T) {
 		_, err := s.GetClient(t.Context(), id)
 		require.Error(t, err)
 	})
-}
-
-func TestCIMDAuthMethodNegotiation(t *testing.T) {
-	for _, scenario := range []struct {
-		name      string
-		primary   string
-		supported string
-		allowed   bool
-	}{
-		{"legacy public", "none", "", true},
-		{"legacy private", "private_key_jwt", "", false},
-		{"explicit public alternative", "private_key_jwt", `["none","private_key_jwt"]`, true},
-		{"alternative order is irrelevant", "private_key_jwt", `["private_key_jwt","none"]`, true},
-		{"no mutual method", "private_key_jwt", `["private_key_jwt"]`, false},
-		{"plural list excludes legacy public", "none", `["private_key_jwt"]`, false},
-		{"empty supported methods", "none", `[]`, false},
-		{"null supported methods", "none", `null`, false},
-		{"supported methods must be array", "none", `"none"`, false},
-		{"supported methods must be strings", "none", `["none",1]`, false},
-		{"empty method is invalid", "none", `["none",""]`, false},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			doc := &fosite.ClientMetadataDocument{ClientID: "https://client.example.com/metadata", TokenEndpointAuthMethod: scenario.primary}
-			if scenario.supported != "" {
-				doc.AdditionalMetadata = map[string]json.RawMessage{"token_endpoint_auth_methods_supported": json.RawMessage(scenario.supported)}
-			}
-			policyError := (cimdPolicy{}).ValidateCIMDClient(t.Context(), doc)
-			client, buildError := buildClientFromMetadata(doc, doc.ClientID)
-			if !scenario.allowed {
-				require.Error(t, policyError)
-				require.Error(t, buildError)
-				return
-			}
-			require.NoError(t, policyError)
-			require.NoError(t, buildError)
-			require.True(t, client.IsPublic)
-			require.True(t, client.PkceEnabled)
-			require.Empty(t, client.Credentials.FederatedIdentities)
-			require.Equal(t, scenario.primary, doc.TokenEndpointAuthMethod)
-		})
-	}
-}
-
-func TestCIMDNegotiatedPublicClientPersistsAndRevalidates(t *testing.T) {
-	const id = "https://8.8.8.8/oauth/client"
-	body := `{"client_id":"https://8.8.8.8/oauth/client","redirect_uris":["https://app.example.com/callback"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"jwks_uri":"https://8.8.4.4/jwks"}`
-	response := testutils.NewMockResponse(http.StatusOK, body) //nolint:bodyclose // mock response has no network connection
-	response.Header.Set("Cache-Control", "max-age=600")
-	store := newMetadataStore(t, map[string]*http.Response{id: response})
-	resolved, err := store.GetClient(t.Context(), id)
-	require.NoError(t, err)
-	client := resolved.(Client)
-	require.True(t, client.IsPublic())
-	require.True(t, client.PkceEnabled)
-	require.Empty(t, client.Credentials.FederatedIdentities)
-	cached, err := store.GetClient(t.Context(), id)
-	require.NoError(t, err)
-	require.True(t, cached.(Client).IsPublic())
-	require.True(t, cached.(Client).PkceEnabled)
-	require.Empty(t, cached.(Client).Credentials.FederatedIdentities)
-	// Losing the mutual public method must fail refresh rather than silently retaining the cached authentication policy
-	response = testutils.NewMockResponse(http.StatusOK, strings.Replace(body, `["none","private_key_jwt"]`, `["private_key_jwt"]`, 1)) //nolint:bodyclose // mock response has no network connection
-	store.resolver.resolver.Fetcher = fosite.NewDefaultCIMDFetcher(fosite.WithCIMDTransport(&testutils.MockRoundTripper{Responses: map[string]*http.Response{id: response}}))
-	_, err = store.RefreshMetadataClient(t.Context(), id)
-	require.Error(t, err)
-}
-
-func TestCIMDNegotiatedPublicClientPKCE(t *testing.T) {
-	const clientID = "https://8.8.8.8/oauth/client"
-	const callback = "https://app.example.com/callback"
-	body := `{"client_id":"https://8.8.8.8/oauth/client","redirect_uris":["https://app.example.com/callback"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"jwks_uri":"https://8.8.4.4/jwks"}`
-	for _, scenario := range []string{"valid verifier", "missing challenge", "wrong verifier", "missing verifier", "private assertion", "client credentials"} {
-		t.Run(scenario, func(t *testing.T) {
-			response := testutils.NewMockResponse(http.StatusOK, body) //nolint:bodyclose // mock response has no network connection
-			store := newMetadataStore(t, map[string]*http.Response{clientID: response})
-			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			require.NoError(t, err)
-			provider, err := newProvider(store.Store, &federatedClientAuthenticator{clients: store}, testTokenSigner{key: key}, Config{BaseURL: "https://issuer.example.com", TokenBaseURL: "https://issuer.example.com", Secret: []byte("test-secret")}, store.resolver)
-			require.NoError(t, err)
-			verifier := strings.Repeat("v", 64)
-			challenge := sha256.Sum256([]byte(verifier))
-			params := url.Values{"client_id": {clientID}, "redirect_uri": {callback}, "response_type": {"code"}, "scope": {"openid"}, "state": {"state-with-enough-entropy"}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}}
-			if scenario == "missing challenge" {
-				params.Del("code_challenge")
-				params.Del("code_challenge_method")
-			}
-			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/oidc/authorize?"+params.Encode(), nil)
-			authorize, err := provider.NewAuthorizeRequest(t.Context(), request)
-			require.NoError(t, err)
-			authorize.GrantScope("openid")
-			authorize.GrantAudience(clientID)
-			session := NewAuthenticatedSession("synthetic-user", "passkey", time.Now(), time.Now())
-			code, err := provider.NewAuthorizeResponse(t.Context(), authorize, session)
-			if scenario == "missing challenge" {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			form := url.Values{"grant_type": {"authorization_code"}, "code": {code.GetCode()}, "client_id": {clientID}, "redirect_uri": {callback}, "code_verifier": {verifier}}
-			switch scenario {
-			case "wrong verifier":
-				form.Set("code_verifier", strings.Repeat("w", 64))
-			case "missing verifier":
-				form.Del("code_verifier")
-			case "private assertion":
-				form.Set("client_assertion_type", clientAssertionTypeJWTBearer)
-				assertion, err := jwt.NewBuilder().Issuer(clientID).Subject(clientID).Audience([]string{"https://issuer.example.com/api/oidc/token"}).IssuedAt(time.Now()).Expiration(time.Now().Add(time.Minute)).JwtID("assertion-1").Build()
-				require.NoError(t, err)
-				signed, err := jwt.Sign(assertion, jwt.WithKey(jwa.ES256(), key))
-				require.NoError(t, err)
-				form.Set("client_assertion", string(signed))
-			case "client credentials":
-				form.Set("grant_type", "client_credentials")
-			}
-			request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://issuer.example.com/api/oidc/token", strings.NewReader(form.Encode()))
-			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			access, err := provider.NewAccessRequest(t.Context(), request, NewEmptySession())
-			if scenario != "valid verifier" {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			token, err := provider.NewAccessResponse(t.Context(), access)
-			require.NoError(t, err)
-			require.NotEmpty(t, token.GetAccessToken())
-		})
-	}
 }

@@ -1,7 +1,6 @@
 {
   "upstream_repository": "https://github.com/pocket-id/pocket-id",
-  "upstream_release": "v2.19.1",
-  "upstream_security_baseline": "32c4d7f7a4853b503752d00163074aa4440ae297",
+  "upstream_release": "v2.19.2",
   "patches": [
     {
       "name": "claim-mapping-policy",
@@ -19,12 +18,6 @@
       "name": "api-scope-claim-mapping",
       "source": "https://github.com/ghoudmon/pocket-id/pull/2",
       "retire_when": "The upstream claim-mapping implementation accepts OAuth API permission keys in its API and UI"
-    },
-    {
-      "name": "cimd-auth-method-negotiation",
-      "source": "https://github.com/pocket-id/pocket-id/pull/1874",
-      "revision": "19d756da5ea64c70e39a496eb17ef79c8458691a",
-      "retire_when": "The deployed upstream release negotiates advertised compatible CIMD authentication methods and passes the protocol/cache regressions"
     },
     {
       "name": "claim-migration-order",
@@ -56,6 +49,26 @@
       "standard": "https://www.rfc-editor.org/rfc/rfc9700.html#section-4.8.2",
       "related_upstream_issue": "https://github.com/pocket-id/pocket-id/issues/1534",
       "retire_when": "An adopted upstream release accepts and advertises S256-only PKCE, either by default or through a supported policy setting; retain explicit and implicit plain rejection and verifier regressions"
+    },
+    {
+      "name": "upstream-cimd-draft-03",
+      "source": "https://github.com/pocket-id/pocket-id/commit/5194ffc4c873183f9f1e1d35585afa5d505d2270",
+      "origins": [
+        "3646c5d2aa8768a5d9f74ec4f04a2b9aa82f6c7a",
+        "69d231063325e35feb86d0a35ecbfed7408b63a3",
+        "5194ffc4c873183f9f1e1d35585afa5d505d2270"
+      ],
+      "adaptation": "Use stable trailing-slash resource normalization because the built-in MCP API is absent; use the stable token-handler constructor. Unrelated disabled-client and user-session tests are excluded.",
+      "retire_when": "The adopted stable release includes these upstream protocol, cache and revocation changes and passes affected CIMD/PKCE regressions."
     }
-  ]
+  ],
+  "fosite_source": {
+    "upstream_release": "v1.6.0",
+    "baseline": "ecc4871dd4cec7de90e5b9ec454e8d3c62989c11",
+    "consumed_commit": "cc8203cfa95d92fc4bc11c369b6302682d3e61e0",
+    "retained_open_fixes": [
+      "https://github.com/pocket-id/fosite/pull/4",
+      "https://github.com/pocket-id/fosite/pull/5"
+    ]
+  }
 }

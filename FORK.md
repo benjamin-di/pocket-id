@@ -1,12 +1,13 @@
 # Deployment fork
 
-`main` follows upstream. `fleet` is the deployable branch: the stable 2.19.1 release,
-upstream security updates, and the upstream contributions listed in
+`main` follows upstream. `fleet` is the deployable branch: the stable 2.19.2 release and the upstream contributions listed in
 [fork-patches.json](fork-patches.json). Application-specific configuration and
 identity data belong in the deployment repository, never here.
 
 The branch carries the existing claim-mapping PR rather than a separate identity
-implementation. The Fosite replacement is pinned to one reviewed public commit.
+implementation. The Fosite replacement is pinned to a v1.6.0 source assembly retaining the still-open
+consented-grant and expiry fixes. The Go pseudo-version reflects the fork's nearest
+published tag; the exact source baseline and consumed commit are in the ledger.
 API-scope mappings use the provider's existing OAuth scope parser, exact granted
 scope matching and per-client policy assignment. Built-in token claims, resource
 audiences and machine/user separation remain owned by their existing layers.
@@ -35,3 +36,12 @@ The deployment owner's shared CI actions are private and unavailable to a public
 fork. These workflows use public upstream actions; the release job queries the
 repository's CI run for the exact tagged commit and refuses failed or missing CI.
 It never repeats the test suite during release.
+
+CIMD follows the upstream draft-03 implementation from `69d23106` and `5194ffc4`,
+with token/consent revocation prerequisite `3646c5d2`. The superseded #1874
+negotiation implementation is removed. This includes minimum caching, stale-on-outage
+limits, client ID mismatch revocation, API-audience collision rejection and rejection
+of authentication credentials from metadata clients. Only the stable resource
+normalization and test constructor require API adaptations. No unrelated main
+ancestry is merged. Independent authentication review and immutable publication
+remain required before consumer adoption.
