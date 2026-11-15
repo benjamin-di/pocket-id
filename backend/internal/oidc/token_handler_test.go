@@ -90,7 +90,7 @@ func TestTokenHandlerClientCredentialsGrant(t *testing.T) {
 	require.Equal(t, "client-"+clientID, claims["sub"])
 	require.Equal(t, clientID, claims["client_id"])
 	require.InDelta(t, 2*time.Hour/time.Second, body["expires_in"], 1)
-	require.InDelta(t, 2*time.Hour/time.Second, claims["exp"].(float64)-claims["iat"].(float64), 1)
+	require.Equal(t, (2 * time.Hour).Seconds(), claims["exp"].(float64)-claims["iat"].(float64), "access-token lifetime must match exactly")
 }
 
 // TestTokenHandlerClientCredentialsDropsIdentityScopes guards that a machine token never
@@ -482,7 +482,7 @@ func TestTokenHandlerRefreshGrantRevalidatesUser(t *testing.T) {
 		require.NotEmpty(t, body["access_token"], "expected a new access token, got error: %v", body["error"])
 		require.InDelta(t, accessDuration/time.Second, body["expires_in"], 1)
 		claims := decodeJWTPart(t, body["access_token"].(string), 1)
-		require.InDelta(t, accessDuration/time.Second, claims["exp"].(float64)-claims["iat"].(float64), 1)
+		require.Equal(t, accessDuration.Seconds(), claims["exp"].(float64)-claims["iat"].(float64), "access-token lifetime must match exactly")
 
 		rotatedSignature := strategy.RefreshTokenSignature(t.Context(), body["refresh_token"].(string))
 		var stored OAuth2Session
