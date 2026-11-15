@@ -5,8 +5,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import type {
 		OidcClaimMappingDto,
-		OidcClaimMappingPolicy,
-		OidcScope
+		OidcClaimMappingPolicy
 	} from '#lib/types/oidc-claim-mapping-policy.type.ts';
 	import { axiosErrorToast } from '#lib/utils/error-util.ts';
 	import { preventDefault } from '#lib/utils/event-util.ts';
@@ -28,23 +27,18 @@
 
 	let isLoading = $state(false);
 
-	// Available scopes
-	const availableScopes: OidcScope[] = [
-		'openid',
-		'profile',
-		'email',
-		'address',
-		'phone',
-		'offline_access',
-		'groups'
-	];
-
 	// Form validation schema for a single claim mapping
 	const claimMappingSchema = z.object({
 		claimName: z.string().min(1),
 		sourceType: z.enum(['user_field', 'custom_claim', 'static']),
 		sourceValue: z.string().min(1),
-		scope: z.array(z.enum(availableScopes)),
+		scope: z.array(
+			z
+				.string()
+				.min(1)
+				.max(128)
+				.regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/)
+		),
 		accessToken: z.boolean(),
 		idToken: z.boolean(),
 		userInfo: z.boolean()

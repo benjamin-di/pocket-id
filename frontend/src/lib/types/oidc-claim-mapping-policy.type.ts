@@ -44,7 +44,7 @@ export type OidcClaimMappingDto = {
 	claimName: string;
 	sourceType: OidcClaimMappingPolicySourceType;
 	sourceValue: string;
-	scope: OidcScope[];
+	scope: string[];
 	accessToken: boolean;
 	idToken: boolean;
 	userInfo: boolean;

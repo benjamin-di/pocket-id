@@ -93,7 +93,11 @@
 				sourceValue: z.string().min(1),
 				scope: z
 					.array(
-						z.enum(['openid', 'profile', 'email', 'address', 'phone', 'offline_access', 'groups'])
+						z
+							.string()
+							.min(1)
+							.max(128)
+							.regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/)
 					)
 					.min(1),
 				accessToken: z.boolean(),
