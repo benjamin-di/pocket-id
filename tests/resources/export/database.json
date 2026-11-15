@@ -4,6 +4,7 @@
 	"tableOrder": [
 		"users",
 		"user_groups",
+		"oidc_claim_mapping_policies",
 		"oidc_clients",
 		"oauth2_sessions",
 		"signup_tokens",
@@ -107,6 +108,7 @@
 		],
 		"oidc_clients": [
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "http://host.docker.internal:18124/nextcloud",
 				"callback_urls": "WyJodHRwOi8vbmV4dGNsb3VkLmxvY2FsaG9zdC9hdXRoL2NhbGxiYWNrIl0=",
@@ -133,6 +135,7 @@
 				"skip_consent": false
 			},
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "",
 				"callback_urls": "WyJodHRwOi8vaW1taWNoLmxvY2FsaG9zdC9hdXRoL2NhbGxiYWNrIl0=",
@@ -159,6 +162,7 @@
 				"skip_consent": false
 			},
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "http://host.docker.internal:18124/tailscale",
 				"callback_urls": "WyJodHRwOi8vdGFpbHNjYWxlLmxvY2FsaG9zdC9hdXRoL2NhbGxiYWNrIl0=",
@@ -185,6 +189,7 @@
 				"skip_consent": false
 			},
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "",
 				"callback_urls": "WyJodHRwOi8vZmVkZXJhdGVkLmxvY2FsaG9zdC9hdXRoL2NhbGxiYWNrIl0=",
@@ -211,6 +216,7 @@
 				"skip_consent": false
 			},
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "",
 				"callback_urls": "WyJodHRwOi8vc2NpbWNsaWVudC5sb2NhbGhvc3QvYXV0aC9jYWxsYmFjayJd",
@@ -237,6 +243,7 @@
 				"credentials": "eyJzZWNyZXRzIjpbeyJpZCI6IjJmMWI4ZjFhLTFkM2UtNGYwYy05YzFhLTAwMDAwMDAwMDAwNSIsImFsZyI6InNoYTI1NiIsImhhc2giOiJiZWM3ZjA4YTI4MDhlZmNkYmU2ZmIwYjFmM2EwZjFhMDFjNjYwMGQxMTc1MjYyOTNjMTlhOWRlZDNkOGVjMGZiIiwicHJlZml4IjoiblFiaSIsImNyZWF0ZWRBdCI6IjIwMjUtMTEtMjVUMTI6Mzk6MDJaIn1dfQ=="
 			},
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "",
 				"callback_urls": "WyJodHRwOi8vcGFyLWNsaWVudC5sb2NhbGhvc3QvYXV0aC9jYWxsYmFjayJd",
@@ -263,6 +270,7 @@
 				"skip_consent": false
 			},
 			{
+				"claim_mapping_policy_id": null,
 				"access_token_duration_minutes": 60,
 				"backchannel_logout_url": "",
 				"callback_urls": "WyJodHRwOi8vc2tpcC1jb25zZW50LmxvY2FsaG9zdC9hdXRoL2NhbGxiYWNrIl0=",
@@ -497,6 +505,15 @@
 				"expires_at": "2025-11-25T13:39:02Z",
 				"id": "267f6907-7bc8-4ea1-9d47-c42a172dc1c7",
 				"user_verification": "preferred"
+			}
+		],
+		"oidc_claim_mapping_policies": [
+			{
+				"id": "00000000-0000-0000-0000-000000000000",
+				"created_at": "2025-11-25T12:39:02Z",
+				"name": "Built-in Policy",
+				"is_default": true,
+				"claim_mappings": "W3siY2xhaW1OYW1lIjoiZW1haWwiLCJzb3VyY2VUeXBlIjoidXNlcl9maWVsZCIsInNvdXJjZVZhbHVlIjoiZW1haWwiLCJzY29wZSI6WyJlbWFpbCJdLCJhY2Nlc3NUb2tlbiI6ZmFsc2UsImlkVG9rZW4iOnRydWUsInVzZXJJbmZvIjp0cnVlfSx7ImNsYWltTmFtZSI6ImVtYWlsX3ZlcmlmaWVkIiwic291cmNlVHlwZSI6InVzZXJfZmllbGQiLCJzb3VyY2VWYWx1ZSI6ImVtYWlsX3ZlcmlmaWVkIiwic2NvcGUiOlsiZW1haWwiXSwiYWNjZXNzVG9rZW4iOmZhbHNlLCJpZFRva2VuIjp0cnVlLCJ1c2VySW5mbyI6dHJ1ZX0seyJjbGFpbU5hbWUiOiJnaXZlbl9uYW1lIiwic291cmNlVHlwZSI6InVzZXJfZmllbGQiLCJzb3VyY2VWYWx1ZSI6ImZpcnN0X25hbWUiLCJzY29wZSI6WyJwcm9maWxlIl0sImFjY2Vzc1Rva2VuIjpmYWxzZSwiaWRUb2tlbiI6dHJ1ZSwidXNlckluZm8iOnRydWV9LHsiY2xhaW1OYW1lIjoiZmFtaWx5X25hbWUiLCJzb3VyY2VUeXBlIjoidXNlcl9maWVsZCIsInNvdXJjZVZhbHVlIjoibGFzdF9uYW1lIiwic2NvcGUiOlsicHJvZmlsZSJdLCJhY2Nlc3NUb2tlbiI6ZmFsc2UsImlkVG9rZW4iOnRydWUsInVzZXJJbmZvIjp0cnVlfSx7ImNsYWltTmFtZSI6Im5hbWUiLCJzb3VyY2VUeXBlIjoidXNlcl9maWVsZCIsInNvdXJjZVZhbHVlIjoiZnVsbF9uYW1lIiwic2NvcGUiOlsicHJvZmlsZSJdLCJhY2Nlc3NUb2tlbiI6ZmFsc2UsImlkVG9rZW4iOnRydWUsInVzZXJJbmZvIjp0cnVlfSx7ImNsYWltTmFtZSI6ImRpc3BsYXlfbmFtZSIsInNvdXJjZVR5cGUiOiJ1c2VyX2ZpZWxkIiwic291cmNlVmFsdWUiOiJkaXNwbGF5X25hbWUiLCJzY29wZSI6WyJwcm9maWxlIl0sImFjY2Vzc1Rva2VuIjpmYWxzZSwiaWRUb2tlbiI6dHJ1ZSwidXNlckluZm8iOnRydWV9LHsiY2xhaW1OYW1lIjoicHJlZmVycmVkX3VzZXJuYW1lIiwic291cmNlVHlwZSI6InVzZXJfZmllbGQiLCJzb3VyY2VWYWx1ZSI6InVzZXJuYW1lIiwic2NvcGUiOlsicHJvZmlsZSJdLCJhY2Nlc3NUb2tlbiI6ZmFsc2UsImlkVG9rZW4iOnRydWUsInVzZXJJbmZvIjp0cnVlfSx7ImNsYWltTmFtZSI6ImxvY2FsZSIsInNvdXJjZVR5cGUiOiJ1c2VyX2ZpZWxkIiwic291cmNlVmFsdWUiOiJsb2NhbGUiLCJzY29wZSI6WyJwcm9maWxlIl0sImFjY2Vzc1Rva2VuIjpmYWxzZSwiaWRUb2tlbiI6dHJ1ZSwidXNlckluZm8iOnRydWV9LHsiY2xhaW1OYW1lIjoicGljdHVyZSIsInNvdXJjZVR5cGUiOiJ1c2VyX2ZpZWxkIiwic291cmNlVmFsdWUiOiJwaWN0dXJlIiwic2NvcGUiOlsicHJvZmlsZSJdLCJhY2Nlc3NUb2tlbiI6ZmFsc2UsImlkVG9rZW4iOnRydWUsInVzZXJJbmZvIjp0cnVlfSx7ImNsYWltTmFtZSI6Imdyb3VwcyIsInNvdXJjZVR5cGUiOiJ1c2VyX2ZpZWxkIiwic291cmNlVmFsdWUiOiJncm91cHMiLCJzY29wZSI6WyJncm91cHMiXSwiYWNjZXNzVG9rZW4iOmZhbHNlLCJpZFRva2VuIjp0cnVlLCJ1c2VySW5mbyI6dHJ1ZX0seyJjbGFpbU5hbWUiOiIqIiwic291cmNlVHlwZSI6ImN1c3RvbV9jbGFpbSIsInNvdXJjZVZhbHVlIjoiKiIsInNjb3BlIjpbInByb2ZpbGUiXSwiYWNjZXNzVG9rZW4iOmZhbHNlLCJpZFRva2VuIjp0cnVlLCJ1c2VySW5mbyI6dHJ1ZX1d"
 			}
 		]
 	}
