@@ -811,13 +811,17 @@ func authorizeRedirectURL(interactionSessionID string) string {
 	return "/authorize?interaction=" + url.QueryEscape(interactionSessionID)
 }
 
-// validateClientPKCERequirement enforces the per-client PkceEnabled flag. fosite only
-// enforces PKCE for public clients (EnforcePKCEForPublicClients).
+// validateClientPKCERequirement rejects unsupported methods before interaction and enforces the per-client PkceEnabled flag
+// Fosite independently enforces S256 and public-client PKCE when issuing and redeeming authorization codes
 func validateClientPKCERequirement(client Client, requester fosite.AuthorizeRequester) error {
+	form := requester.GetRequestForm()
+	if form.Get("code_challenge") != "" && form.Get("code_challenge_method") != "S256" {
+		return fosite.ErrInvalidRequest.WithHint("Clients must use code_challenge_method=S256.")
+	}
 	if !client.PkceEnabled {
 		return nil
 	}
-	if requester.GetRequestForm().Get("code_challenge") == "" {
+	if form.Get("code_challenge") == "" {
 		return fosite.ErrInvalidRequest.WithHint("This client requires PKCE, but the 'code_challenge' parameter is missing.")
 	}
 	return nil
