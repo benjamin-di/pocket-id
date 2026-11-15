@@ -904,7 +904,7 @@ func TestTokenHandlerMetadataDocumentClient(t *testing.T) {
 			Secret:       []byte("test-secret"),
 		}, resolver)
 		require.NoError(t, err)
-		handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil, appconfig.StaticResolver{}), nil, nil)
+		handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil, appconfig.StaticResolver{}), nil)
 
 		form := url.Values{"grant_type": {"authorization_code"}, "code": {"unknown"}, "client_id": {clientID}}
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/oidc/token", nil)

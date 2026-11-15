@@ -158,7 +158,7 @@ func (p cimdPolicy) AllowCIMDClient(ctx context.Context, id string) error {
 	// A client ID is also the audience of the client's login tokens, so one that names an API could have them accepted there
 	// The issuer needs no check of its own, because it has no path and a client ID must have one
 	if p.apiAccess != nil {
-		_, apiExists, _, err := p.apiAccess.AllowedScopesForAudience(ctx, nil, id, canonicalResource(id), SubjectTypeUser)
+		_, apiExists, _, err := p.apiAccess.AllowedScopesForAudience(ctx, nil, id, strings.TrimRight(id, "/"), SubjectTypeUser)
 		if err != nil {
 			return err
 		}
