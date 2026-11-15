@@ -686,11 +686,13 @@ func TestTokenHandlerRefreshGrantPreservesAudienceAndScope(t *testing.T) {
 			fosite.Arguments{"openid", "read:orders"},
 			fosite.Arguments{apiResource},
 		)
-		// With the grant revoked the client no longer advertises read:orders, so the refresh handler rejects replaying that stored scope
+		// The refresh handler drops the lost read:orders scope, but the client no longer has the API audience either, so the refresh fails
 		// Revocation is therefore enforced on the very next refresh rather than lingering until the refresh token expires
 		body := doRefresh(t, db, revokedAPI, clientID, token, nil)
 		require.Empty(t, body["access_token"])
-		require.Equal(t, "invalid_scope", body["error"])
+		require.Empty(t, body["refresh_token"])
+		require.Empty(t, body["id_token"])
+		require.Equal(t, "invalid_request", body["error"])
 	})
 
 	t.Run("revoking only the user-delegated API grant makes the next refresh fail", func(t *testing.T) {
