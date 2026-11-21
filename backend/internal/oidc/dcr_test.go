@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/model"
+	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	testutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
 )
 
@@ -157,7 +158,8 @@ func TestDCR_RejectsDisallowedURIsAuthMethodsGrantsAndEnforcesCap(t *testing.T) 
 		{"foreign redirect URI", map[string]any{"redirect_uris": []string{"https://evil.example/callback"}}},
 		{"wildcard in requested URI", map[string]any{"redirect_uris": []string{"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*"}}},
 		{"non-loopback http", map[string]any{"redirect_uris": []string{"http://example.com/callback"}}},
-		{"confidential client", map[string]any{"redirect_uris": []string{"http://127.0.0.1:9999/callback"}, "token_endpoint_auth_method": "client_secret_basic"}},
+		{"confidential loopback client", map[string]any{"redirect_uris": []string{"http://127.0.0.1:9999/callback"}, "token_endpoint_auth_method": "client_secret_basic"}},
+		{"unsupported auth method", map[string]any{"redirect_uris": []string{"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc"}, "token_endpoint_auth_method": "private_key_jwt"}},
 		{"client_credentials grant", map[string]any{"redirect_uris": []string{"http://127.0.0.1:9999/callback"}, "grant_types": []string{"client_credentials"}}},
 		{"implicit response_type", map[string]any{"redirect_uris": []string{"http://127.0.0.1:9999/callback"}, "response_types": []string{"token"}}},
 	}
@@ -186,4 +188,71 @@ func TestDCR_SanitizeLogRedirectURIs(t *testing.T) {
 		"http://127.0.0.1:45123/callback",
 		"<invalid-uri>",
 	}, got)
+}
+
+func TestDCR_AllowsConfidentialHTTPSClientWithSecretAndBlocksClientCredentials(t *testing.T) {
+	db := setupDCRTestDB(t)
+	h := newDCRHandler(db, DCRConfig{
+		RedirectURIAllowlist: []string{
+			"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*",
+			"https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-*",
+		},
+		AccessTokenDurationMinutes:  15,
+		RefreshTokenDurationMinutes: 43200,
+		ClaimMappingPolicy:          "MCP API claims",
+		AllowedAPIGrants:            []string{"https://mcp.example.com/all/mcp=all:use"},
+		MaxClients:                  10,
+	})
+
+	uris := []string{
+		"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abcdef123456",
+		"https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-abcdef123456",
+	}
+
+	w1 := postDCR(t, h, map[string]any{
+		"client_name":                "Gemini Connected App",
+		"redirect_uris":              uris,
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+		"token_endpoint_auth_method": "client_secret_basic",
+	})
+	require.Equal(t, http.StatusCreated, w1.Code, w1.Body.String())
+	assert.Equal(t, "no-store", w1.Header().Get("Cache-Control"))
+	assert.Equal(t, "no-cache", w1.Header().Get("Pragma"))
+
+	var resp1 dcrRegisterResponse
+	require.NoError(t, json.Unmarshal(w1.Body.Bytes(), &resp1))
+	assert.True(t, len(resp1.ClientID) > len(dcrConfidentialClientIDPrefix))
+	assert.Contains(t, resp1.ClientID, dcrConfidentialClientIDPrefix)
+	assert.Len(t, resp1.ClientSecret, 32)
+	require.NotNil(t, resp1.ClientSecretExpiresAt)
+	assert.Equal(t, int64(0), *resp1.ClientSecretExpiresAt)
+	assert.Equal(t, "client_secret_basic", resp1.TokenEndpointAuthMethod)
+
+	var stored model.OidcClient
+	require.NoError(t, db.First(&stored, "id = ?", resp1.ClientID).Error)
+	assert.False(t, stored.IsPublic)
+	assert.True(t, stored.PkceEnabled)
+	assert.False(t, stored.SkipConsent)
+	require.Len(t, stored.Credentials.Secrets, 1)
+	assert.Equal(t, model.OidcClientSecretHashSHA256, stored.Credentials.Secrets[0].Algorithm)
+	assert.Equal(t, utils.CreateSha256Hash(resp1.ClientSecret), stored.Credentials.Secrets[0].Hash)
+	assert.Equal(t, resp1.ClientSecret[:model.OidcClientSecretPrefixLength], stored.Credentials.Secrets[0].Prefix)
+	// Confidential DCR clients must still be restricted to authorization_code and refresh_token (no client_credentials or device_code)
+	assert.Equal(t, []string{"authorization_code", "refresh_token"}, []string(Client{OidcClient: stored}.GetGrantTypes()))
+
+	// A second confidential registration for the same URIs creates an isolated client without rotating or exposing the first
+	w2 := postDCR(t, h, map[string]any{
+		"client_name":                "Gemini Connected App",
+		"redirect_uris":              uris,
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+		"token_endpoint_auth_method": "client_secret_post",
+	})
+	require.Equal(t, http.StatusCreated, w2.Code, w2.Body.String())
+	var resp2 dcrRegisterResponse
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
+	assert.NotEqual(t, resp1.ClientID, resp2.ClientID)
+	assert.NotEqual(t, resp1.ClientSecret, resp2.ClientSecret)
+	assert.Equal(t, "client_secret_post", resp2.TokenEndpointAuthMethod)
 }

@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,10 +27,11 @@ import (
 )
 
 const (
-	dcrClientIDPrefix = "dcr-"
-	dcrMaxBodyBytes   = 16 * 1024
-	dcrMaxRedirectURI = 25
-	dcrMaxClientName  = 100
+	dcrClientIDPrefix             = "dcr-"
+	dcrConfidentialClientIDPrefix = "dcr-c-"
+	dcrMaxBodyBytes               = 16 * 1024
+	dcrMaxRedirectURI             = 25
+	dcrMaxClientName              = 100
 )
 
 type DCRConfig struct {
@@ -51,7 +53,9 @@ type dcrRegisterRequest struct {
 
 type dcrRegisterResponse struct {
 	ClientID                string   `json:"client_id"`
+	ClientSecret            string   `json:"client_secret,omitempty"`
 	ClientIDIssuedAt        int64    `json:"client_id_issued_at"`
+	ClientSecretExpiresAt   *int64   `json:"client_secret_expires_at,omitempty"`
 	ClientName              string   `json:"client_name"`
 	RedirectURIs            []string `json:"redirect_uris"`
 	GrantTypes              []string `json:"grant_types"`
@@ -121,7 +125,7 @@ func (h *dcrHandler) register(c *gin.Context) {
 		return
 	}
 
-	grantTypes, responseTypes, clientName, err := validateDCRMetadata(req)
+	authMethod, grantTypes, responseTypes, clientName, err := validateDCRMetadata(req, canonicalURIs)
 	if err != nil {
 		slog.WarnContext(
 			c.Request.Context(),
@@ -142,7 +146,7 @@ func (h *dcrHandler) register(c *gin.Context) {
 		return
 	}
 
-	client, err := h.createOrReuseClient(c.Request.Context(), clientName, canonicalURIs, grantTypes, grantSpecs)
+	client, plainSecret, err := h.createOrReuseClient(c.Request.Context(), clientName, canonicalURIs, authMethod, grantTypes, grantSpecs)
 	if err != nil {
 		var capErr *dcrCapacityError
 		if errors.As(err, &capErr) {
@@ -164,15 +168,24 @@ func (h *dcrHandler) register(c *gin.Context) {
 		persistedGrants = grantTypes
 	}
 
-	c.JSON(http.StatusCreated, dcrRegisterResponse{
+	resp := dcrRegisterResponse{
 		ClientID:                client.ID,
 		ClientIDIssuedAt:        issuedAt,
 		ClientName:              client.Name,
 		RedirectURIs:            []string(client.CallbackURLs),
 		GrantTypes:              persistedGrants,
 		ResponseTypes:           responseTypes,
-		TokenEndpointAuthMethod: "none",
-	})
+		TokenEndpointAuthMethod: authMethod,
+	}
+	if plainSecret != "" {
+		zero := int64(0)
+		resp.ClientSecret = plainSecret
+		resp.ClientSecretExpiresAt = &zero
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.JSON(http.StatusCreated, resp)
 }
 
 type dcrCapacityError struct {
@@ -224,6 +237,14 @@ func dcrClientID(canonicalURIs []string) string {
 	return dcrClientIDPrefix + hex.EncodeToString(sum[:12])
 }
 
+func dcrConfidentialClientID() (string, error) {
+	var raw [12]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("failed to generate dynamic client ID: %w", err)
+	}
+	return dcrConfidentialClientIDPrefix + hex.EncodeToString(raw[:]), nil
+}
+
 func validateDCRRedirectURIs(uris []string, allowlist []string) ([]string, error) {
 	if len(uris) == 0 {
 		return nil, errors.New("redirect_uris is required")
@@ -271,10 +292,22 @@ func validateDCRRedirectURIs(uris []string, allowlist []string) ([]string, error
 	return canonical, nil
 }
 
-func validateDCRMetadata(req dcrRegisterRequest) ([]string, []string, string, error) {
+func validateDCRMetadata(req dcrRegisterRequest, canonicalURIs []string) (string, []string, []string, string, error) {
 	authMethod := strings.TrimSpace(req.TokenEndpointAuthMethod)
-	if authMethod != "" && authMethod != "none" {
-		return nil, nil, "", errors.New("only public PKCE clients (token_endpoint_auth_method=none) are permitted")
+	if authMethod == "" {
+		authMethod = "none"
+	}
+	switch authMethod {
+	case "none":
+	case "client_secret_basic", "client_secret_post":
+		for _, uri := range canonicalURIs {
+			parsed, err := url.Parse(uri)
+			if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+				return "", nil, nil, "", errors.New("confidential dynamic clients require https redirect_uris")
+			}
+		}
+	default:
+		return "", nil, nil, "", errors.New("token_endpoint_auth_method is not permitted")
 	}
 
 	grantTypes := req.GrantTypes
@@ -288,11 +321,11 @@ func validateDCRMetadata(req dcrRegisterRequest) ([]string, []string, string, er
 				hasAuthCode = true
 			case "refresh_token":
 			default:
-				return nil, nil, "", errors.New("grant_type is not permitted")
+				return "", nil, nil, "", errors.New("grant_type is not permitted")
 			}
 		}
 		if !hasAuthCode {
-			return nil, nil, "", errors.New("grant_types must include authorization_code")
+			return "", nil, nil, "", errors.New("grant_types must include authorization_code")
 		}
 	}
 
@@ -302,7 +335,7 @@ func validateDCRMetadata(req dcrRegisterRequest) ([]string, []string, string, er
 	} else {
 		for _, rt := range responseTypes {
 			if rt != "code" {
-				return nil, nil, "", errors.New("response_type is not permitted")
+				return "", nil, nil, "", errors.New("response_type is not permitted")
 			}
 		}
 	}
@@ -315,7 +348,7 @@ func validateDCRMetadata(req dcrRegisterRequest) ([]string, []string, string, er
 		clientName = clientName[:dcrMaxClientName]
 	}
 
-	return grantTypes, responseTypes, clientName, nil
+	return authMethod, grantTypes, responseTypes, clientName, nil
 }
 
 func parseDCRAPIGrants(entries []string) ([]dcrAPIGrantSpec, error) {
@@ -345,7 +378,7 @@ func parseDCRAPIGrants(entries []string) ([]dcrAPIGrantSpec, error) {
 	return specs, nil
 }
 
-func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string, canonicalURIs []string, grantTypes []string, grantSpecs []dcrAPIGrantSpec) (model.OidcClient, error) {
+func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string, canonicalURIs []string, authMethod string, grantTypes []string, grantSpecs []dcrAPIGrantSpec) (model.OidcClient, string, error) {
 	// Serialize deduplication, capacity checking, and insertion so concurrent registrations cannot exceed the cap
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -353,23 +386,34 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 	tx := h.db.WithContext(ctx).Begin()
 	defer tx.Rollback()
 
-	// Deduplicate repeated registrations via deterministic primary key derived from the canonical redirect URI set
-	clientID := dcrClientID(canonicalURIs)
-	var existing model.OidcClient
-	err := tx.First(&existing, "id = ?", clientID).Error
-	if err == nil {
-		if err := tx.Commit().Error; err != nil {
-			return model.OidcClient{}, err
+	isPublic := authMethod == "none"
+	var clientID string
+	if isPublic {
+		// Deduplicate repeated public registrations via deterministic primary key derived from the canonical redirect URI set
+		clientID = dcrClientID(canonicalURIs)
+		var existing model.OidcClient
+		err := tx.First(&existing, "id = ?", clientID).Error
+		if err == nil {
+			if err := tx.Commit().Error; err != nil {
+				return model.OidcClient{}, "", err
+			}
+			return existing, "", nil
 		}
-		return existing, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.OidcClient{}, err
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.OidcClient{}, "", err
+		}
+	} else {
+		// Issue a fresh isolated client ID and secret per confidential registration so prior registrations are never overwritten or exposed
+		var err error
+		clientID, err = dcrConfidentialClientID()
+		if err != nil {
+			return model.OidcClient{}, "", err
+		}
 	}
 
 	var count int64
 	if err := tx.Model(&model.OidcClient{}).Where("id LIKE ?", dcrClientIDPrefix+"%").Count(&count).Error; err != nil {
-		return model.OidcClient{}, err
+		return model.OidcClient{}, "", err
 	}
 
 	maxClients := h.config.MaxClients
@@ -377,7 +421,7 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 		maxClients = 200
 	}
 	if int(count) >= maxClients {
-		return model.OidcClient{}, &dcrCapacityError{msg: "dynamic client registration capacity reached"}
+		return model.OidcClient{}, "", &dcrCapacityError{msg: "dynamic client registration capacity reached"}
 	}
 
 	// Resolve the optional claim-mapping policy before inserting the client, avoiding UUID type errors on Postgres when matching by name
@@ -391,7 +435,7 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 			query = query.Where("name = ?", policySelector)
 		}
 		if err := query.Take(&row).Error; err != nil {
-			return model.OidcClient{}, fmt.Errorf("claim mapping policy %q not found: %w", policySelector, err)
+			return model.OidcClient{}, "", fmt.Errorf("claim mapping policy %q not found: %w", policySelector, err)
 		}
 		policyID = &row.ID
 	}
@@ -405,18 +449,41 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 		refreshMinutes = model.DefaultRefreshTokenDurationMinutes
 	}
 
+	now := datatype.DateTime(time.Now())
+	var (
+		plainSecret string
+		credentials model.OidcClientCredentials
+	)
+	if !isPublic {
+		var err error
+		plainSecret, err = utils.GenerateRandomAlphanumericString(32)
+		if err != nil {
+			return model.OidcClient{}, "", fmt.Errorf("failed to generate dynamic client secret: %w", err)
+		}
+		credentials.Secrets = []model.OidcClientSecret{
+			{
+				ID:        uuid.NewString(),
+				Algorithm: model.OidcClientSecretHashSHA256,
+				Hash:      utils.CreateSha256Hash(plainSecret),
+				Prefix:    plainSecret[:model.OidcClientSecretPrefixLength],
+				CreatedAt: now,
+			},
+		}
+	}
+
 	client := model.OidcClient{
 		Base: model.Base{
 			ID:        clientID,
-			CreatedAt: datatype.DateTime(time.Now()),
+			CreatedAt: now,
 		},
 		Name:                        clientName,
 		CallbackURLs:                datatype.StringList(canonicalURIs),
-		IsPublic:                    true,
+		IsPublic:                    isPublic,
 		PkceEnabled:                 true,
 		PkceSupported:               true,
 		SkipConsent:                 false,
 		RequiresReauthentication:    false,
+		Credentials:                 credentials,
 		ClientType:                  model.OidcClientTypeStandard,
 		MetadataGrantTypes:          datatype.StringList(grantTypes),
 		AccessTokenDurationMinutes:  accessMinutes,
@@ -425,14 +492,14 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 	}
 
 	if err := tx.Create(&client).Error; err != nil {
-		return model.OidcClient{}, err
+		return model.OidcClient{}, "", err
 	}
 
 	// Attach configured user-delegated API grants atomically within the same transaction
 	for _, spec := range grantSpecs {
 		var apiRow struct{ ID string }
 		if err := tx.Table("apis").Select("id").Where("audience = ?", spec.Audience).Take(&apiRow).Error; err != nil {
-			return model.OidcClient{}, fmt.Errorf("API audience %q not found: %w", spec.Audience, err)
+			return model.OidcClient{}, "", fmt.Errorf("API audience %q not found: %w", spec.Audience, err)
 		}
 
 		var permRows []struct {
@@ -443,10 +510,10 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 			Select("id, key").
 			Where("api_id = ? AND key IN ?", apiRow.ID, spec.Permissions).
 			Find(&permRows).Error; err != nil {
-			return model.OidcClient{}, err
+			return model.OidcClient{}, "", err
 		}
 		if len(permRows) != len(spec.Permissions) {
-			return model.OidcClient{}, fmt.Errorf("one or more permissions missing on API %q", spec.Audience)
+			return model.OidcClient{}, "", fmt.Errorf("one or more permissions missing on API %q", spec.Audience)
 		}
 
 		if err := tx.Table("oidc_clients_allowed_apis").Create(map[string]any{
@@ -454,7 +521,7 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 			"api_id":         apiRow.ID,
 			"subject_type":   SubjectTypeUser,
 		}).Error; err != nil {
-			return model.OidcClient{}, err
+			return model.OidcClient{}, "", err
 		}
 
 		for _, perm := range permRows {
@@ -463,14 +530,14 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 				"api_permission_id": perm.ID,
 				"subject_type":      SubjectTypeUser,
 			}).Error; err != nil {
-				return model.OidcClient{}, err
+				return model.OidcClient{}, "", err
 			}
 		}
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		return model.OidcClient{}, err
+		return model.OidcClient{}, "", err
 	}
 
-	return client, nil
+	return client, plainSecret, nil
 }
