@@ -28,7 +28,7 @@ import (
 const (
 	dcrClientIDPrefix = "dcr-"
 	dcrMaxBodyBytes   = 16 * 1024
-	dcrMaxRedirectURI = 5
+	dcrMaxRedirectURI = 25
 	dcrMaxClientName  = 100
 )
 
@@ -110,12 +110,14 @@ func (h *dcrHandler) register(c *gin.Context) {
 
 	canonicalURIs, err := validateDCRRedirectURIs(req.RedirectURIs, allowlist)
 	if err != nil {
+		slog.WarnContext(c.Request.Context(), "Rejected dynamic OIDC client redirect_uris", "reason", err.Error(), "redirect_uris", req.RedirectURIs)
 		writeDCRError(c, http.StatusBadRequest, "invalid_redirect_uri", err.Error())
 		return
 	}
 
 	grantTypes, responseTypes, clientName, err := validateDCRMetadata(req)
 	if err != nil {
+		slog.WarnContext(c.Request.Context(), "Rejected dynamic OIDC client metadata", "reason", err.Error(), "auth_method", req.TokenEndpointAuthMethod, "grant_types", req.GrantTypes, "response_types", req.ResponseTypes)
 		writeDCRError(c, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
