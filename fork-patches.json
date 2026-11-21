@@ -60,6 +60,17 @@
       ],
       "adaptation": "Use stable trailing-slash resource normalization because the built-in MCP API is absent; use the stable token-handler constructor. Unrelated disabled-client and user-session tests are excluded.",
       "retire_when": "The adopted stable release includes these upstream protocol, cache and revocation changes and passes affected CIMD/PKCE regressions."
+    },
+    {
+      "name": "device-approval-json-body",
+      "source": "https://github.com/pocket-id/pocket-id/commit/d6a056355a3238b0d0c624d4788e8118dafed7f6",
+      "advisory": "https://github.com/pocket-id/pocket-id/security/advisories/GHSA-vrfp-679c-xc3x",
+      "retire_when": "An adopted upstream release >= v2.19.3 includes the forced device-approval fix and passes device authorization regressions."
+    },
+    {
+      "name": "group-administration-ux",
+      "source": "fleet-carry",
+      "retire_when": "An adopted upstream release shows group friendly names in user-group-input, labels selection checkboxes in advanced-table, and uses accurate disabled-user revocation copy."
     }
   ],
   "fosite_source": {
