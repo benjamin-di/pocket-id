@@ -71,6 +71,12 @@
       "name": "group-administration-ux",
       "source": "fleet-carry",
       "retire_when": "An adopted upstream release shows group friendly names in user-group-input, labels selection checkboxes in advanced-table, and uses accurate disabled-user revocation copy."
+    },
+    {
+      "name": "bounded-rfc7591-dcr",
+      "source": "fleet-carry",
+      "standard": "https://www.rfc-editor.org/rfc/rfc7591.html",
+      "retire_when": "An adopted upstream release supports allowlisted public-PKCE RFC 7591 dynamic client registration with configurable token lifetimes, claim-mapping policy, and bounded API grants."
     }
   ],
   "fosite_source": {
