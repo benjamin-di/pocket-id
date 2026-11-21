@@ -174,3 +174,16 @@ func TestDCR_RejectsDisallowedURIsAuthMethodsGrantsAndEnforcesCap(t *testing.T) 
 	w2 := postDCR(t, h, map[string]any{"redirect_uris": []string{"http://127.0.0.1:22222/callback"}})
 	assert.Equal(t, http.StatusTooManyRequests, w2.Code)
 }
+
+func TestDCR_SanitizeLogRedirectURIs(t *testing.T) {
+	got := sanitizeDCRLogRedirectURIs([]string{
+		"https://alice:synthetic-password@example.invalid/callback?code=secret#frag",
+		"http://127.0.0.1:45123/callback?state=abc",
+		"not-a-valid-uri",
+	})
+	assert.Equal(t, []string{
+		"https://example.invalid/callback",
+		"http://127.0.0.1:45123/callback",
+		"<invalid-uri>",
+	}, got)
+}

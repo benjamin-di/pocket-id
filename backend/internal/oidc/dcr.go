@@ -110,14 +110,27 @@ func (h *dcrHandler) register(c *gin.Context) {
 
 	canonicalURIs, err := validateDCRRedirectURIs(req.RedirectURIs, allowlist)
 	if err != nil {
-		slog.WarnContext(c.Request.Context(), "Rejected dynamic OIDC client redirect_uris", "reason", err.Error(), "redirect_uris", req.RedirectURIs)
+		slog.WarnContext(
+			c.Request.Context(),
+			"Rejected dynamic OIDC client redirect_uris",
+			"reason", err.Error(),
+			"redirect_uri_count", len(req.RedirectURIs),
+			"redirect_targets", sanitizeDCRLogRedirectURIs(req.RedirectURIs),
+		)
 		writeDCRError(c, http.StatusBadRequest, "invalid_redirect_uri", err.Error())
 		return
 	}
 
 	grantTypes, responseTypes, clientName, err := validateDCRMetadata(req)
 	if err != nil {
-		slog.WarnContext(c.Request.Context(), "Rejected dynamic OIDC client metadata", "reason", err.Error(), "auth_method", req.TokenEndpointAuthMethod, "grant_types", req.GrantTypes, "response_types", req.ResponseTypes)
+		slog.WarnContext(
+			c.Request.Context(),
+			"Rejected dynamic OIDC client metadata",
+			"reason", err.Error(),
+			"auth_method_present", strings.TrimSpace(req.TokenEndpointAuthMethod) != "",
+			"grant_type_count", len(req.GrantTypes),
+			"response_type_count", len(req.ResponseTypes),
+		)
 		writeDCRError(c, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
@@ -183,6 +196,26 @@ func SanitizeDCRAllowlist(raw []string) []string {
 		cleaned = append(cleaned, pattern)
 	}
 	return cleaned
+}
+
+// sanitizeDCRLogRedirectURIs strips userinfo, query parameters, and fragments before logging.
+func sanitizeDCRLogRedirectURIs(uris []string) []string {
+	limit := min(len(uris), dcrMaxRedirectURI)
+	sanitized := make([]string, 0, limit)
+	for _, raw := range uris[:limit] {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			sanitized = append(sanitized, "<invalid-uri>")
+			continue
+		}
+		clean := url.URL{
+			Scheme: strings.ToLower(parsed.Scheme),
+			Host:   parsed.Host,
+			Path:   parsed.Path,
+		}
+		sanitized = append(sanitized, clean.String())
+	}
+	return sanitized
 }
 
 func dcrClientID(canonicalURIs []string) string {
@@ -255,7 +288,7 @@ func validateDCRMetadata(req dcrRegisterRequest) ([]string, []string, string, er
 				hasAuthCode = true
 			case "refresh_token":
 			default:
-				return nil, nil, "", fmt.Errorf("grant_type %q is not permitted", g)
+				return nil, nil, "", errors.New("grant_type is not permitted")
 			}
 		}
 		if !hasAuthCode {
@@ -269,7 +302,7 @@ func validateDCRMetadata(req dcrRegisterRequest) ([]string, []string, string, er
 	} else {
 		for _, rt := range responseTypes {
 			if rt != "code" {
-				return nil, nil, "", fmt.Errorf("response_type %q is not permitted", rt)
+				return nil, nil, "", errors.New("response_type is not permitted")
 			}
 		}
 	}
