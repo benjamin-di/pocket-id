@@ -10,6 +10,7 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	_ "github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
+	"github.com/pocket-id/pocket-id/backend/internal/oidc"
 	"github.com/pocket-id/pocket-id/backend/internal/service"
 )
 
@@ -126,6 +127,9 @@ func (wkc *WellKnownController) computeServerMetadata() ([]byte, error) {
 		"backchannel_logout_session_supported":           false,
 		"client_id_metadata_document_supported":          cimdSupported,
 		"service_documentation":                          "https://pocket-id.org/docs",
+	}
+	if len(oidc.SanitizeDCRAllowlist(common.EnvConfig.DCRRedirectURIAllowlist)) > 0 {
+		config["registration_endpoint"] = appUrl + "/api/oidc/register"
 	}
 	return json.Marshal(config)
 }

@@ -28,6 +28,7 @@ const (
 	RateLimitDeviceLoginVerification = "device-login-verification"
 	RateLimitSendEmailVerification   = "send-email-verification"
 	RateLimitVerifyEmail             = "verify-email"
+	RateLimitOidcRegister            = "oidc-register"
 	RateLimitInternal                = "internal"
 )
 
@@ -59,6 +60,7 @@ func RateLimitPolicies() []RateLimitPolicy {
 		{Name: RateLimitDeviceLoginVerification, Rate: 1, Per: 10 * time.Second, Burst: 5},
 		{Name: RateLimitSendEmailVerification, Rate: 2, Per: 10 * time.Minute, Burst: 1},
 		{Name: RateLimitVerifyEmail, Rate: 1, Per: 10 * time.Second, Burst: 5},
+		{Name: RateLimitOidcRegister, Rate: 5, Per: time.Minute, Burst: 10},
 		{Name: RateLimitInternal, Rate: 20, Per: time.Second, Burst: 20},
 	}
 }

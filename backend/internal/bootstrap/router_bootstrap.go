@@ -192,7 +192,7 @@ func registerRoutes(r *gin.Engine, db *gorm.DB, svc *services, auth *authz.Middl
 		rateLimitMiddleware.Add(middleware.RateLimitSendEmailVerification),
 		rateLimitMiddleware.Add(middleware.RateLimitVerifyEmail),
 	)
-	svc.oidcModule.RegisterRoutes(baseRouter, apiRouter)
+	svc.oidcModule.RegisterRoutes(baseRouter, apiRouter, rateLimitMiddleware.Add(middleware.RateLimitOidcRegister))
 
 	registerTestRoutes(apiRouter, db, svc)
 

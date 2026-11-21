@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pocket-id/fosite"
@@ -57,14 +58,14 @@ func (c Client) GetGrantTypes() fosite.Arguments {
 		grantTypes = append(grantTypes, string(fosite.GrantTypeClientCredentials))
 	}
 
-	if !c.IsMetadataDocument() {
+	if !c.IsMetadataDocument() && (!strings.HasPrefix(c.ID, dcrClientIDPrefix) || len(c.MetadataGrantTypes) == 0) {
 		return grantTypes
 	}
 	if len(c.MetadataGrantTypes) == 0 {
 		return fosite.Arguments{string(fosite.GrantTypeAuthorizationCode)}
 	}
 
-	// If the client is a CIMD client, we need to filter the grant types based on the metadata document.
+	// Restrict CIMD and dynamically registered clients to their declared grant types
 	allowed := make(fosite.Arguments, 0, len(c.MetadataGrantTypes))
 	for _, value := range c.MetadataGrantTypes {
 		if slices.Contains([]string(grantTypes), value) {

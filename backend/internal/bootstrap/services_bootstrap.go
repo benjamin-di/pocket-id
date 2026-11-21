@@ -166,6 +166,14 @@ func initServices(
 		FederatedJWKSClient: outboundClients.Client(outbound.PurposeFederatedJWKS),
 		CIMDTransport:       outboundClients.Transport(outbound.PurposeClientMetadata),
 		GetCIMDURLAllowlist: svc.appConfigService.GetCIMDURLAllowlist,
+		DCRConfig: oidc.DCRConfig{
+			RedirectURIAllowlist:        common.EnvConfig.DCRRedirectURIAllowlist,
+			AccessTokenDurationMinutes:  common.EnvConfig.DCRDefaultAccessTokenDuration,
+			RefreshTokenDurationMinutes: common.EnvConfig.DCRDefaultRefreshTokenDuration,
+			ClaimMappingPolicy:          common.EnvConfig.DCRDefaultClaimMappingPolicy,
+			AllowedAPIGrants:            common.EnvConfig.DCRAllowedAPIGrants,
+			MaxClients:                  common.EnvConfig.DCRMaxClients,
+		},
 		Config: oidc.Config{
 			BaseURL:                   common.EnvConfig.AppURL,
 			TokenBaseURL:              common.EnvConfig.AppURL,

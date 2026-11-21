@@ -57,6 +57,16 @@ func TestClientIDMetadataDocumentDiscoveryFollowsAllowlist(t *testing.T) {
 
 	cimdURLAllowlist = nil
 	assert.Equal(t, false, parse(t)["client_id_metadata_document_supported"])
+	assert.NotContains(t, parse(t), "registration_endpoint")
+
+	origDCR := common.EnvConfig.DCRRedirectURIAllowlist
+	t.Cleanup(func() {
+		common.EnvConfig.DCRRedirectURIAllowlist = origDCR
+	})
+	common.EnvConfig.DCRRedirectURIAllowlist = []string{"*"}
+	assert.NotContains(t, parse(t), "registration_endpoint")
+	common.EnvConfig.DCRRedirectURIAllowlist = []string{"http://127.0.0.1/callback"}
+	assert.Equal(t, "https://test.example.com/api/oidc/register", parse(t)["registration_endpoint"])
 }
 
 func TestOAuthAuthorizationServerMetadata(t *testing.T) {

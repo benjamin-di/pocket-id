@@ -152,6 +152,14 @@ type EnvConfigSchema struct {
 	// Note: this is omitted from the general list of environment variables in the docs, and documented only in the SQLite-specific section
 	DismissSQLiteStorageWarning DismissSQLiteStorageWarningConfig `env:"DISMISS_SQLITE_STORAGE_WARNING"`
 
+	// Bounded RFC 7591 dynamic client registration settings; empty allowlist leaves DCR disabled
+	DCRRedirectURIAllowlist        []string `env:"DCR_REDIRECT_URI_ALLOWLIST"`
+	DCRDefaultAccessTokenDuration  int64    `env:"DCR_DEFAULT_ACCESS_TOKEN_DURATION"`
+	DCRDefaultRefreshTokenDuration int64    `env:"DCR_DEFAULT_REFRESH_TOKEN_DURATION"`
+	DCRDefaultClaimMappingPolicy   string   `env:"DCR_DEFAULT_CLAIM_MAPPING_POLICY"`
+	DCRAllowedAPIGrants            []string `env:"DCR_ALLOWED_API_GRANTS"`
+	DCRMaxClients                  int      `env:"DCR_MAX_CLIENTS"`
+
 	/*** Internal properties ***/
 
 	// francisAddresses contains the runtime addresses parsed out of FrancisHost, and is empty when the actor runtime is embedded
@@ -190,6 +198,9 @@ func defaultConfig() EnvConfigSchema {
 		OutboundAllowedHostsSCIM:              "private,loopback",
 		OutboundAllowedHostsBackchannelLogout: "private,loopback",
 		OutboundAllowedHostsFederatedJWKS:     "private,loopback",
+		DCRDefaultAccessTokenDuration:         15,
+		DCRDefaultRefreshTokenDuration:        43200,
+		DCRMaxClients:                         200,
 	}
 }
 

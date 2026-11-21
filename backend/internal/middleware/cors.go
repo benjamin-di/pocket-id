@@ -26,7 +26,7 @@ func (m *CorsMiddleware) Add() gin.HandlerFunc {
 		}
 
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST")
 
 		// Preflight request
@@ -42,6 +42,7 @@ func (m *CorsMiddleware) Add() gin.HandlerFunc {
 func isCorsPath(path string) bool {
 	switch path {
 	case "/api/oidc/token",
+		"/api/oidc/register",
 		"/api/oidc/userinfo",
 		"/api/oidc/end-session",
 		"/api/oidc/introspect",

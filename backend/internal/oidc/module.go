@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	francishost "github.com/italypaleale/francis/host"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -51,6 +52,7 @@ type Dependencies struct {
 	CIMDTransport       http.RoundTripper
 
 	GetCIMDURLAllowlist func() []string
+	DCRConfig           DCRConfig
 
 	Signer       TokenSigner
 	CustomClaims CustomClaimSource
@@ -77,6 +79,7 @@ type Module struct {
 	introspectionHandler *introspectionHandler
 	endSessionHandler    *endSessionHandler
 	deviceHandler        *deviceHandler
+	dcrHandler           *dcrHandler
 }
 
 func New(ctx context.Context, deps Dependencies) (*Module, error) {
@@ -139,6 +142,7 @@ func New(ctx context.Context, deps Dependencies) (*Module, error) {
 		introspectionHandler: newIntrospectionHandler(provider, authenticator, deps.Config.BaseURL),
 		endSessionHandler:    newEndSessionHandler(endSessionService, deps.Config.BaseURL),
 		deviceHandler:        newDeviceHandler(provider, deviceService),
+		dcrHandler:           newDCRHandler(deps.DB, deps.DCRConfig),
 	}, nil
 }
 
@@ -147,7 +151,7 @@ func (m *Module) RefreshClientMetadata(ctx context.Context, clientID string) (mo
 	return m.cimdResolver.RefreshMetadataClient(ctx, clientID)
 }
 
-func (m *Module) RegisterRoutes(root, api *authz.Router) {
+func (m *Module) RegisterRoutes(root, api *authz.Router, registerRateLimit ...gin.HandlerFunc) {
 	// Browsers reach the authorize endpoint through a redirect, so authorization errors are shown on the interaction error page instead of as JSON
 	authorize := root.Use(m.authorizationHandler.redirectAuthorizationErrors).Optional()
 	authorize.GET("/authorize", authz.AccountAuthorize, m.authorizationHandler.authorize)
@@ -159,6 +163,8 @@ func (m *Module) RegisterRoutes(root, api *authz.Router) {
 	api.Public().POST("/oidc/par", m.parHandler.pushedAuthorizationRequest)
 
 	api.Public().POST("/oidc/token", m.tokenHandler.token)
+	registerHandlers := append(append([]gin.HandlerFunc{}, registerRateLimit...), m.dcrHandler.register)
+	api.Public().POST("/oidc/register", registerHandlers...)
 
 	api.Public().GET("/oidc/userinfo", m.userInfoHandler.userInfo)
 	api.Public().POST("/oidc/userinfo", m.userInfoHandler.userInfo)
