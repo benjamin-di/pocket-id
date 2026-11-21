@@ -95,6 +95,17 @@
 		return true;
 	});
 
+	function rowSelectionLabel(item: T) {
+		const record = item as Record<string, unknown>;
+		for (const key of ['friendlyName', 'displayName', 'name', 'username', 'id']) {
+			const value = record[key];
+			if (typeof value === 'string' && value.trim()) {
+				return `Select ${value.trim()}`;
+			}
+		}
+		return 'Select row';
+	}
+
 	async function onAllCheck(checked: boolean) {
 		const pageIds = items!.data
 			.filter((item) => !rowSelectionDisabled?.(item))
@@ -219,6 +230,7 @@
 						{#if selectedIds}
 							<Table.Head class="w-12">
 								<Checkbox
+									aria-label="Select all on this page"
 									disabled={selectionDisabled}
 									checked={allChecked}
 									onCheckedChange={(c: boolean) => onAllCheck(c as boolean)}
@@ -282,6 +294,7 @@
 							{#if selectedIds}
 								<Table.Cell class="w-12">
 									<Checkbox
+										aria-label={rowSelectionLabel(item)}
 										disabled={selectionDisabled || rowSelectionDisabled?.(item)}
 										checked={selectedIds.includes(item.id)}
 										onCheckedChange={(c: boolean) => onCheck(c, item.id)}
