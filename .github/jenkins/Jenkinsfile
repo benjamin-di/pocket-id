@@ -1,0 +1,11 @@
+@Library('fleet-ci') _
+fleetPipeline(
+    check: [
+        'Backend': 'bash scripts/ci/check-backend.sh',
+        'Frontend': 'bash scripts/ci/check-frontend.sh',
+    ],
+    image: [
+        dockerfile: 'docker/Dockerfile',
+        smoke: 'scripts/ci/smoke-image.sh',
+    ],
+)
