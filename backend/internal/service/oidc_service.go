@@ -241,6 +241,7 @@ func (s *OidcService) UpdateClient(ctx context.Context, clientID string, input d
 				"SkipConsent",
 				"LaunchURL",
 				"IsGroupRestricted",
+				"ClaimMappingPolicyId",
 				"AccessTokenDurationMinutes",
 				"RefreshTokenDurationMinutes",
 			).

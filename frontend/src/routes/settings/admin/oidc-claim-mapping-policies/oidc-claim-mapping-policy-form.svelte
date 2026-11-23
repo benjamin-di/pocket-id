@@ -48,7 +48,7 @@
 	const policySchema = z.object({
 		name: z.string().min(1),
 		isDefault: z.boolean(),
-		claimMappings: z.array(claimMappingSchema).min(1)
+		claimMappings: z.array(claimMappingSchema)
 	});
 
 	type FormSchema = typeof policySchema;

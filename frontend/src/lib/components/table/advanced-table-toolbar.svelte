@@ -38,7 +38,6 @@
 	const onSearch = debounced(async (search: string) => {
 		requestOptions.search = search;
 		await refresh();
-		searchValue = search;
 	}, 300);
 </script>
 
@@ -50,7 +49,11 @@
 				class="relative z-50 w-full sm:max-w-xs"
 				placeholder={m.search()}
 				type="text"
-				oninput={(e: Event) => onSearch((e.currentTarget as HTMLInputElement).value)}
+				oninput={(e: Event) => {
+					const next = (e.currentTarget as HTMLInputElement).value;
+					searchValue = next;
+					onSearch(next);
+				}}
 			/>
 		{/if}
 

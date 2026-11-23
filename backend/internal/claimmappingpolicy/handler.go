@@ -185,13 +185,13 @@ func (h *handler) listClients(c *gin.Context) error {
 		return err
 	}
 
-	var dtos []dto.OidcClientMetaDataDto
+	var dtos []OidcClaimMappingPolicyClientDto
 	err = dto.MapStructList(clients, &dtos)
 	if err != nil {
 		return err
 	}
 
-	c.JSON(http.StatusOK, dto.Paginated[dto.OidcClientMetaDataDto]{
+	c.JSON(http.StatusOK, dto.Paginated[OidcClaimMappingPolicyClientDto]{
 		Data:       dtos,
 		Pagination: pagination,
 	})
@@ -222,13 +222,13 @@ func (h *handler) listAssignableClients(c *gin.Context) error {
 		return err
 	}
 
-	var dtos []dto.OidcClientMetaDataDto
+	var dtos []OidcClaimMappingPolicyClientDto
 	err = dto.MapStructList(clients, &dtos)
 	if err != nil {
 		return err
 	}
 
-	c.JSON(http.StatusOK, dto.Paginated[dto.OidcClientMetaDataDto]{
+	c.JSON(http.StatusOK, dto.Paginated[OidcClaimMappingPolicyClientDto]{
 		Data:       dtos,
 		Pagination: pagination,
 	})

@@ -69,15 +69,23 @@ type dcrAPIGrantSpec struct {
 }
 
 type dcrHandler struct {
-	db     *gorm.DB
-	config DCRConfig
-	mu     sync.Mutex
+	db             *gorm.DB
+	config         DCRConfig
+	allowlist      []string
+	grantSpecs     []dcrAPIGrantSpec
+	grantConfigErr error
+	mu             sync.Mutex
 }
 
 func newDCRHandler(db *gorm.DB, config DCRConfig) *dcrHandler {
+	allowlist := SanitizeDCRAllowlist(config.RedirectURIAllowlist)
+	grantSpecs, grantConfigErr := parseDCRAPIGrants(config.AllowedAPIGrants)
 	return &dcrHandler{
-		db:     db,
-		config: config,
+		db:             db,
+		config:         config,
+		allowlist:      allowlist,
+		grantSpecs:     grantSpecs,
+		grantConfigErr: grantConfigErr,
 	}
 }
 
@@ -89,8 +97,7 @@ func writeDCRError(c *gin.Context, status int, code, description string) {
 }
 
 func (h *dcrHandler) register(c *gin.Context) {
-	allowlist := SanitizeDCRAllowlist(h.config.RedirectURIAllowlist)
-	if len(allowlist) == 0 {
+	if len(h.allowlist) == 0 {
 		writeDCRError(c, http.StatusNotFound, "invalid_client_metadata", "Dynamic client registration is disabled")
 		return
 	}
@@ -112,7 +119,7 @@ func (h *dcrHandler) register(c *gin.Context) {
 		return
 	}
 
-	canonicalURIs, err := validateDCRRedirectURIs(req.RedirectURIs, allowlist)
+	canonicalURIs, err := validateDCRRedirectURIs(req.RedirectURIs, h.allowlist)
 	if err != nil {
 		slog.WarnContext(
 			c.Request.Context(),
@@ -139,14 +146,13 @@ func (h *dcrHandler) register(c *gin.Context) {
 		return
 	}
 
-	grantSpecs, err := parseDCRAPIGrants(h.config.AllowedAPIGrants)
-	if err != nil {
-		slog.ErrorContext(c.Request.Context(), "Invalid DCR API grant configuration", "error", err)
+	if h.grantConfigErr != nil {
+		slog.ErrorContext(c.Request.Context(), "Invalid DCR API grant configuration", "error", h.grantConfigErr)
 		writeDCRError(c, http.StatusInternalServerError, "server_error", "Dynamic client registration is misconfigured")
 		return
 	}
 
-	client, plainSecret, err := h.createOrReuseClient(c.Request.Context(), clientName, canonicalURIs, authMethod, grantTypes, grantSpecs)
+	client, plainSecret, err := h.createOrReuseClient(c.Request.Context(), clientName, canonicalURIs, authMethod, grantTypes, h.grantSpecs)
 	if err != nil {
 		var capErr *dcrCapacityError
 		if errors.As(err, &capErr) {
@@ -264,7 +270,7 @@ func validateDCRRedirectURIs(uris []string, allowlist []string) ([]string, error
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 			return nil, errors.New("redirect_uris must be valid absolute URLs")
 		}
-		if parsed.Fragment != "" || parsed.User != nil {
+		if strings.Contains(uri, "#") || parsed.Fragment != "" || parsed.User != nil {
 			return nil, errors.New("redirect_uris must not contain fragments or userinfo")
 		}
 		scheme := strings.ToLower(parsed.Scheme)
@@ -315,6 +321,8 @@ func validateDCRMetadata(req dcrRegisterRequest, canonicalURIs []string) (string
 		grantTypes = []string{"authorization_code", "refresh_token"}
 	} else {
 		hasAuthCode := false
+		seenGrants := make(map[string]struct{}, len(grantTypes))
+		dedupGrants := make([]string, 0, len(grantTypes))
 		for _, g := range grantTypes {
 			switch g {
 			case "authorization_code":
@@ -323,29 +331,41 @@ func validateDCRMetadata(req dcrRegisterRequest, canonicalURIs []string) (string
 			default:
 				return "", nil, nil, "", errors.New("grant_type is not permitted")
 			}
+			if _, exists := seenGrants[g]; !exists {
+				seenGrants[g] = struct{}{}
+				dedupGrants = append(dedupGrants, g)
+			}
 		}
 		if !hasAuthCode {
 			return "", nil, nil, "", errors.New("grant_types must include authorization_code")
 		}
+		grantTypes = dedupGrants
 	}
 
 	responseTypes := req.ResponseTypes
 	if len(responseTypes) == 0 {
 		responseTypes = []string{"code"}
 	} else {
+		seenRT := make(map[string]struct{}, len(responseTypes))
+		dedupRT := make([]string, 0, len(responseTypes))
 		for _, rt := range responseTypes {
 			if rt != "code" {
 				return "", nil, nil, "", errors.New("response_type is not permitted")
 			}
+			if _, exists := seenRT[rt]; !exists {
+				seenRT[rt] = struct{}{}
+				dedupRT = append(dedupRT, rt)
+			}
 		}
+		responseTypes = dedupRT
 	}
 
 	clientName := strings.TrimSpace(req.ClientName)
 	if clientName == "" {
 		clientName = "Dynamic OAuth Client"
 	}
-	if len(clientName) > dcrMaxClientName {
-		clientName = clientName[:dcrMaxClientName]
+	if runes := []rune(clientName); len(runes) > dcrMaxClientName {
+		clientName = string(runes[:dcrMaxClientName])
 	}
 
 	return authMethod, grantTypes, responseTypes, clientName, nil
@@ -364,9 +384,14 @@ func parseDCRAPIGrants(entries []string) ([]dcrAPIGrantSpec, error) {
 			return nil, fmt.Errorf("invalid DCR API grant %q: expected <audience>=<perm1>|<perm2>", trimmed)
 		}
 		var perms []string
+		seenPerms := make(map[string]struct{})
 		for p := range strings.SplitSeq(rawPerms, "|") {
 			p = strings.TrimSpace(p)
-			if p != "" {
+			if p == "" {
+				continue
+			}
+			if _, exists := seenPerms[p]; !exists {
+				seenPerms[p] = struct{}{}
 				perms = append(perms, p)
 			}
 		}
@@ -424,20 +449,28 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 		return model.OidcClient{}, "", &dcrCapacityError{msg: "dynamic client registration capacity reached"}
 	}
 
-	// Resolve the optional claim-mapping policy before inserting the client, avoiding UUID type errors on Postgres when matching by name
+	// Resolve the optional claim-mapping policy before inserting the client, rejecting ambiguous display names
 	var policyID *string
 	if policySelector := strings.TrimSpace(h.config.ClaimMappingPolicy); policySelector != "" {
-		var row struct{ ID string }
-		query := tx.Table("oidc_claim_mapping_policies").Select("id")
 		if _, parseErr := uuid.Parse(policySelector); parseErr == nil {
-			query = query.Where("id = ?", policySelector)
+			var row struct{ ID string }
+			if err := tx.Table("oidc_claim_mapping_policies").Select("id").Where("id = ?", policySelector).Take(&row).Error; err != nil {
+				return model.OidcClient{}, "", fmt.Errorf("claim mapping policy %q not found: %w", policySelector, err)
+			}
+			policyID = &row.ID
 		} else {
-			query = query.Where("name = ?", policySelector)
+			var rows []struct{ ID string }
+			if err := tx.Table("oidc_claim_mapping_policies").Select("id").Where("name = ?", policySelector).Limit(2).Find(&rows).Error; err != nil {
+				return model.OidcClient{}, "", fmt.Errorf("failed to resolve claim mapping policy %q: %w", policySelector, err)
+			}
+			if len(rows) == 0 {
+				return model.OidcClient{}, "", fmt.Errorf("claim mapping policy %q not found", policySelector)
+			}
+			if len(rows) > 1 {
+				return model.OidcClient{}, "", fmt.Errorf("claim mapping policy name %q is ambiguous", policySelector)
+			}
+			policyID = &rows[0].ID
 		}
-		if err := query.Take(&row).Error; err != nil {
-			return model.OidcClient{}, "", fmt.Errorf("claim mapping policy %q not found: %w", policySelector, err)
-		}
-		policyID = &row.ID
 	}
 
 	accessMinutes := h.config.AccessTokenDurationMinutes
@@ -524,12 +557,16 @@ func (h *dcrHandler) createOrReuseClient(ctx context.Context, clientName string,
 			return model.OidcClient{}, "", err
 		}
 
+		permGrantRows := make([]map[string]any, 0, len(permRows))
 		for _, perm := range permRows {
-			if err := tx.Table("oidc_clients_allowed_api_permissions").Create(map[string]any{
+			permGrantRows = append(permGrantRows, map[string]any{
 				"oidc_client_id":    client.ID,
 				"api_permission_id": perm.ID,
 				"subject_type":      SubjectTypeUser,
-			}).Error; err != nil {
+			})
+		}
+		if len(permGrantRows) > 0 {
+			if err := tx.Table("oidc_clients_allowed_api_permissions").Create(permGrantRows).Error; err != nil {
 				return model.OidcClient{}, "", err
 			}
 		}

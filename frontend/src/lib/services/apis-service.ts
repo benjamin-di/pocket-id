@@ -20,8 +20,18 @@ export default class ApisService extends APIService {
 	};
 
 	listAll = async () => {
-		const res = await this.api.get('/apis', { params: { pagination: { page: 1, limit: 1000 } } });
-		return (res.data as Paginated<Api>).data;
+		const apis: Api[] = [];
+		let page = 1;
+		while (true) {
+			const res = await this.api.get('/apis', { params: { pagination: { page, limit: 100 } } });
+			const payload = res.data as Paginated<Api>;
+			apis.push(...payload.data);
+			if (page >= (payload.pagination?.totalPages ?? 1) || payload.data.length === 0) {
+				break;
+			}
+			page++;
+		}
+		return apis;
 	};
 
 	get = async (id: string) => {

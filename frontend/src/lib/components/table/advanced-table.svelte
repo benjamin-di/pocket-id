@@ -190,11 +190,22 @@
 		return availableActions.length > 0 ? () => availableActions[0].onClick(item) : null;
 	}
 
+	let latestRefreshRequest = 0;
+
 	export async function refresh(resetPage = false) {
+		const reqId = ++latestRefreshRequest;
 		if (resetPage) await changePageState(1);
-		items = await fetchCallback(requestOptions);
-		await changePageState(items.pagination.currentPage);
-		updateListLength(items.pagination.totalItems);
+		const snapshot: ListRequestOptions = {
+			...requestOptions,
+			pagination: requestOptions.pagination ? { ...requestOptions.pagination } : undefined,
+			sort: requestOptions.sort ? { ...requestOptions.sort } : undefined,
+			filters: requestOptions.filters ? { ...requestOptions.filters } : undefined
+		};
+		const result = await fetchCallback(snapshot);
+		if (reqId !== latestRefreshRequest) return;
+		items = result;
+		await changePageState(result.pagination.currentPage);
+		updateListLength(result.pagination.totalItems);
 	}
 </script>
 
@@ -202,13 +213,13 @@
 	{columns}
 	bind:visibleColumns={tablePreferences.current.visibleColumns}
 	{requestOptions}
-	{searchValue}
+	bind:searchValue
 	{withoutSearch}
 	{refresh}
 	{onFilterChange}
 />
 
-{#if (items?.pagination.totalItems === 0 && searchValue === '') || tablePreferences.current.length === 0}
+{#if items && items.pagination.totalItems === 0 && searchValue === ''}
 	<div class="my-5 flex flex-col items-center">
 		<Empty class="text-muted-foreground h-20" />
 		<p class="text-muted-foreground mt-3 text-sm">{m.no_items_found()}</p>

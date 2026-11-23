@@ -4,9 +4,13 @@
 	import * as Dialog from '#lib/components/ui/dialog/index.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import OidcClaimMappingPolicyService from '#lib/services/oidc-claim-mapping-policy-service.ts';
-	import type { AdvancedTableColumn } from '#lib/types/advanced-table.type.ts';
+	import type {
+		AdvancedTableColumn,
+		CreateAdvancedTableActions
+	} from '#lib/types/advanced-table.type.ts';
 	import type { ListRequestOptions } from '#lib/types/list-request.type.ts';
 	import type { OidcClientMetaData } from '#lib/types/oidc.type.ts';
+	import { LucidePlus } from '@lucide/svelte';
 
 	let {
 		open = $bindable(),
@@ -29,6 +33,15 @@
 			sortable: true,
 			value: (item) =>
 				item.clientType === 'cimd' ? m.client_type_metadata_document() : m.client_type_standard()
+		}
+	];
+
+	const actions: CreateAdvancedTableActions<OidcClientMetaData> = (item) => [
+		{
+			label: item.claimMappingPolicyId ? 'Reassign' : m.assign_client(),
+			icon: LucidePlus,
+			primary: true,
+			onClick: (client) => onSelect(client)
 		}
 	];
 
@@ -56,6 +69,7 @@
 			{fetchCallback}
 			defaultSort={{ column: 'name', direction: 'asc' }}
 			{columns}
+			{actions}
 		/>
 	</Dialog.Content>
 </Dialog.Root>

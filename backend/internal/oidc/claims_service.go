@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,10 +76,13 @@ type userClaimsSource struct {
 
 // loadUserClaimsSource reads the user with its groups, the claim mapping policy of the client and, when the policy needs them, the custom claims of the user
 func (s *ClaimsService) loadUserClaimsSource(ctx context.Context, userID string, clientID string) (*userClaimsSource, error) {
-	var src userClaimsSource
-	err := withTx(ctx, s.db, func(ctx context.Context) error {
-		db := dbFromContext(ctx, s.db)
+	return s.loadUserClaimsSourceForScopes(ctx, userID, clientID, nil)
+}
 
+// loadUserClaimsSourceForScopes reads user, groups, policy, and needed custom claims from one consistent read snapshot without taking a write lock on standalone reads
+func (s *ClaimsService) loadUserClaimsSourceForScopes(ctx context.Context, userID string, clientID string, scopes []string) (*userClaimsSource, error) {
+	var src userClaimsSource
+	load := func(ctx context.Context, db *gorm.DB) error {
 		// Load the user with its groups, which back the groups claim, the group restriction and the group custom claims
 		err := db.
 			Preload("UserGroups").
@@ -97,15 +101,30 @@ func (s *ClaimsService) loadUserClaimsSource(ctx context.Context, userID string,
 		}
 		src.policy = *policy
 
-		// Custom claims cost an extra query, so they are only read when the policy can release one
-		// A service wired without a custom claim source simply has none
-		if s.customClaims == nil || !policyHasCustomClaimMapping(src.policy) {
+		// Custom claims cost an extra query, so they are only read when a matching mapping can release one
+		if s.customClaims == nil || !policyNeedsCustomClaims(src.policy, scopes) {
 			return nil
 		}
 
 		src.customClaims, err = s.customClaims.GetCustomClaimsForUserWithUserGroups(ctx, src.user.ID, db)
 		return err
-	})
+	}
+
+	if _, inTx := ctx.Value(txContextKey{}).(*gorm.DB); inTx {
+		if err := load(ctx, dbFromContext(ctx, s.db)); err != nil {
+			return nil, err
+		}
+		return &src, nil
+	}
+
+	txOpts := &sql.TxOptions{ReadOnly: true}
+	// PostgreSQL defaults to READ COMMITTED, so use REPEATABLE READ to pin one consistent snapshot across user, groups, policy, and custom claims
+	if s.db.Name() == "postgres" {
+		txOpts.Isolation = sql.LevelRepeatableRead
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return load(contextWithTx(ctx, tx), tx)
+	}, txOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -113,20 +132,26 @@ func (s *ClaimsService) loadUserClaimsSource(ctx context.Context, userID string,
 	return &src, nil
 }
 
-func policyHasCustomClaimMapping(policy claimmappingpolicy.OidcClaimMappingPolicy) bool {
+func policyNeedsCustomClaims(policy claimmappingpolicy.OidcClaimMappingPolicy, scopes []string) bool {
 	return slices.ContainsFunc(policy.ClaimMappings, func(mapping claimmappingpolicy.OidcClaimMapping) bool {
-		return mapping.SourceType == claimmappingpolicy.MappingSourceCustomClaim
+		if mapping.SourceType != claimmappingpolicy.MappingSourceCustomClaim {
+			return false
+		}
+		if len(scopes) == 0 {
+			return true
+		}
+		return isScopeMatching(scopes, mapping.Scope)
 	})
 }
 
 // loadGrantClaimsSource loads the claims source of the user behind a grant and re-checks, at token-issuance time, that the user is still allowed to obtain tokens for the client
 // Grants without a resource owner (e.g. client_credentials) carry an empty subject, so they have no user to validate and get a nil source
-func (s *ClaimsService) loadGrantClaimsSource(ctx context.Context, userID string, client Client) (*userClaimsSource, error) {
+func (s *ClaimsService) loadGrantClaimsSource(ctx context.Context, userID string, client Client, scopes []string) (*userClaimsSource, error) {
 	if userID == "" {
 		return nil, nil
 	}
 
-	src, err := s.loadUserClaimsSource(ctx, userID, client.GetID())
+	src, err := s.loadUserClaimsSourceForScopes(ctx, userID, client.GetID(), scopes)
 	if errors.Is(err, errClaimsUserNotFound) {
 		return nil, fosite.ErrInvalidGrant.WithHint("The user account no longer exists.")
 	} else if err != nil {
@@ -154,15 +179,13 @@ func (s *ClaimsService) loadGrantClaimsSource(ctx context.Context, userID string
 }
 
 // GetClaimMappingPolicyByClientID returns the claim mapping policy assigned to the client, or the default policy when the client doesn't have one assigned (claim_mapping_policy_id IS NULL)
-// Both candidates are fetched in a single query: the assigned policy is ordered first so it wins over the default whenever it exists
+// Resolving the single effective ID via COALESCE allows a direct primary-key lookup without scanning and sorting all policies
 func (s *ClaimsService) GetClaimMappingPolicyByClientID(ctx context.Context, clientID string) (*claimmappingpolicy.OidcClaimMappingPolicy, error) {
 	var claimMappingPolicy claimmappingpolicy.OidcClaimMappingPolicy
 	err := dbFromContext(ctx, s.db).
 		Model(&claimmappingpolicy.OidcClaimMappingPolicy{}).
-		Where("oidc_claim_mapping_policies.id = (SELECT claim_mapping_policy_id FROM oidc_clients WHERE oidc_clients.id = ?)", clientID).
-		Or("oidc_claim_mapping_policies.is_default = ?", true).
-		Order("oidc_claim_mapping_policies.is_default ASC").
-		First(&claimMappingPolicy).Error
+		Where("id = COALESCE((SELECT claim_mapping_policy_id FROM oidc_clients WHERE id = ?), (SELECT id FROM oidc_claim_mapping_policies WHERE is_default = ? LIMIT 1))", clientID, true).
+		Take(&claimMappingPolicy).Error
 	if err != nil {
 		return nil, err
 	}
@@ -215,12 +238,30 @@ func applyUserClaimsToAccessToken(session *Session, claims map[string]any) {
 // It works on already loaded data, so it never touches the database and cannot fail
 func (s *ClaimsService) buildClaims(src *userClaimsSource, scopes []string, tokenType TokenType) map[string]any {
 	claims := make(map[string]any, len(src.policy.ClaimMappings))
+	// Reserve all applicable explicit claim names so wildcard custom claims cannot backfill an explicit mapping whose source value is absent
+	explicitDestinations := make(map[string]struct{}, len(src.policy.ClaimMappings))
 	for _, mapping := range src.policy.ClaimMappings {
-		if ((mapping.IDToken && tokenType == IDTokenType) ||
-			(mapping.AccessToken && tokenType == AccessTokenType) ||
-			(mapping.UserInfo && tokenType == UserInfoType)) &&
+		if !(mapping.SourceType == claimmappingpolicy.MappingSourceCustomClaim && mapping.SourceValue == "*") &&
+			mappingAppliesToTokenType(mapping, tokenType) &&
 			isScopeMatching(scopes, mapping.Scope) {
-			s.applyUserClaims(claims, src.user, src.customClaims, mapping)
+			explicitDestinations[mapping.ClaimName] = struct{}{}
+		}
+	}
+	for _, mapping := range src.policy.ClaimMappings {
+		if mapping.SourceType == claimmappingpolicy.MappingSourceCustomClaim && mapping.SourceValue == "*" &&
+			mappingAppliesToTokenType(mapping, tokenType) &&
+			isScopeMatching(scopes, mapping.Scope) {
+			s.applyUserClaims(claims, src.user, src.customClaims, mapping, explicitDestinations)
+		}
+	}
+	for _, mapping := range src.policy.ClaimMappings {
+		if !(mapping.SourceType == claimmappingpolicy.MappingSourceCustomClaim && mapping.SourceValue == "*") &&
+			mappingAppliesToTokenType(mapping, tokenType) &&
+			isScopeMatching(scopes, mapping.Scope) {
+			if isReservedTokenClaim(mapping.ClaimName) {
+				continue
+			}
+			s.applyUserClaims(claims, src.user, src.customClaims, mapping, nil)
 		}
 	}
 
@@ -230,6 +271,21 @@ func (s *ClaimsService) buildClaims(src *userClaimsSource, scopes []string, toke
 	}
 
 	return claims
+}
+
+func mappingAppliesToTokenType(mapping claimmappingpolicy.OidcClaimMapping, tokenType TokenType) bool {
+	return (mapping.IDToken && tokenType == IDTokenType) ||
+		(mapping.AccessToken && tokenType == AccessTokenType) ||
+		(mapping.UserInfo && tokenType == UserInfoType)
+}
+
+func isReservedTokenClaim(claim string) bool {
+	switch claim {
+	case "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp", "nbf", "jti", common.TokenTypeClaim:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseCustomClaimValue decodes a custom claim value that is a JSON document and returns any other value as a plain string
@@ -287,7 +343,7 @@ func isScopeMatching(requestedScopes []string, claimScopes []string) bool {
 	return false
 }
 
-func (s *ClaimsService) applyUserClaims(claims map[string]any, user model.User, customClaims []model.CustomClaim, mapping claimmappingpolicy.OidcClaimMapping) {
+func (s *ClaimsService) applyUserClaims(claims map[string]any, user model.User, customClaims []model.CustomClaim, mapping claimmappingpolicy.OidcClaimMapping, explicitDestinations map[string]struct{}) {
 	switch mapping.SourceType {
 	case claimmappingpolicy.MappingSourceUserField:
 		// Map from user field
@@ -295,11 +351,11 @@ func (s *ClaimsService) applyUserClaims(claims map[string]any, user model.User, 
 		case claimmappingpolicy.UserFieldID:
 			claims[mapping.ClaimName] = user.ID
 		case claimmappingpolicy.UserFieldEmail:
-			if user.Email != nil {
+			if user.Email != nil && *user.Email != "" {
 				claims[mapping.ClaimName] = *user.Email
 			}
 		case claimmappingpolicy.UserFieldEmailVerified:
-			if user.Email != nil {
+			if user.Email != nil && *user.Email != "" {
 				claims[mapping.ClaimName] = user.EmailVerified
 			}
 		case claimmappingpolicy.UserFieldFirstName:
@@ -333,6 +389,12 @@ func (s *ClaimsService) applyUserClaims(claims map[string]any, user model.User, 
 				claimName := mapping.ClaimName
 				if mapping.ClaimName == "*" {
 					claimName = customClaim.Key
+				}
+				if isReservedTokenClaim(claimName) {
+					continue
+				}
+				if _, reservedExplicit := explicitDestinations[claimName]; reservedExplicit {
+					continue
 				}
 				claims[claimName] = parseCustomClaimValue(customClaim.Value)
 				if mapping.SourceValue != "*" {

@@ -256,3 +256,49 @@ func TestDCR_AllowsConfidentialHTTPSClientWithSecretAndBlocksClientCredentials(t
 	assert.NotEqual(t, resp1.ClientSecret, resp2.ClientSecret)
 	assert.Equal(t, "client_secret_post", resp2.TokenEndpointAuthMethod)
 }
+
+func TestDCR_HardeningEdgeCases(t *testing.T) {
+	db := setupDCRTestDB(t)
+
+	// Truncates multi-byte UTF-8 client names on a rune boundary without splitting characters
+	longName := ""
+	for range 105 {
+		longName += "界"
+	}
+	h := newDCRHandler(db, DCRConfig{
+		RedirectURIAllowlist: []string{"http://127.0.0.1/callback", "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*"},
+		ClaimMappingPolicy:   "MCP API claims",
+		AllowedAPIGrants:     []string{"https://mcp.example.com/all/mcp=all:use|all:use"},
+		MaxClients:           10,
+	})
+	w := postDCR(t, h, map[string]any{
+		"client_name":   longName,
+		"redirect_uris": []string{"http://127.0.0.1:43210/callback"},
+		"grant_types":   []string{"authorization_code", "authorization_code", "refresh_token"},
+	})
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var resp dcrRegisterResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, []rune(resp.ClientName), dcrMaxClientName)
+	assert.Equal(t, []string{"authorization_code", "refresh_token"}, resp.GrantTypes)
+
+	// Exact-match redirect URI validation for DCR clients rejects glob-like mismatches and allows RFC 8252 loopback port variation
+	dcrClient := Client{OidcClient: model.OidcClient{
+		Base:               model.Base{ID: resp.ClientID},
+		CallbackURLs:       []string{"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc?x=a*b", "http://127.0.0.1:43210/callback"},
+		MetadataGrantTypes: []string{"authorization_code"},
+	}}
+	_, err := matchRedirectURI("https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc?x=azb", dcrClient)
+	assert.Error(t, err)
+	matched, err := matchRedirectURI("http://127.0.0.1:55555/callback", dcrClient)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:55555/callback", matched.String())
+
+	// Ambiguous policy names fail closed instead of picking an arbitrary row
+	require.NoError(t, db.Exec(`INSERT INTO oidc_claim_mapping_policies (id, name, claim_mappings, created_at) VALUES ('policy-mcp-dup', 'MCP API claims', '[]', CURRENT_TIMESTAMP)`).Error)
+	wDup := postDCR(t, h, map[string]any{
+		"client_name":   "Ambiguous Policy Client",
+		"redirect_uris": []string{"http://127.0.0.1:43211/callback"},
+	})
+	assert.Equal(t, http.StatusInternalServerError, wDup.Code)
+}

@@ -243,10 +243,20 @@ func (s *Service) CreateClaimMappingPolicy(ctx context.Context, dto OidcClaimMap
 		return &dto, err
 	}
 
-	tx := s.db.Begin()
+	tx := s.db.WithContext(ctx).Begin()
 	defer func() {
 		tx.Rollback()
 	}()
+
+	// Serialize default transitions on the fixed built-in row and clear the previous default before promoting the new row
+	if dto.IsDefault {
+		if _, err := s.getClaimMappingPolicyInternal(ctx, tx, BuiltInClaimMappingPolicyID, true); err != nil && !errors.Is(err, apperror.NotFound("Claim mapping policy")) {
+			return &dto, err
+		}
+		if err := tx.WithContext(ctx).Model(&OidcClaimMappingPolicy{}).Where("is_default = ?", true).Update("is_default", false).Error; err != nil {
+			return &dto, err
+		}
+	}
 
 	// Create the claim mapping policy
 	claimMappingPolicy := OidcClaimMappingPolicy{}
@@ -255,14 +265,6 @@ func (s *Service) CreateClaimMappingPolicy(ctx context.Context, dto OidcClaimMap
 	err = tx.WithContext(ctx).Create(&claimMappingPolicy).Error
 	if err != nil {
 		return &dto, err
-	}
-
-	// Unset default for other claim mapping policies, in the same transaction so there is never more than one default
-	if claimMappingPolicy.IsDefault {
-		err := tx.WithContext(ctx).Model(&OidcClaimMappingPolicy{}).Where("id != ?", claimMappingPolicy.ID).Update("is_default", false).Error
-		if err != nil {
-			return &dto, err
-		}
 	}
 
 	err = tx.Commit().Error
@@ -281,10 +283,17 @@ func (s *Service) UpdateClaimMappingPolicy(ctx context.Context, policyID string,
 		return &dto, err
 	}
 
-	tx := s.db.Begin()
+	tx := s.db.WithContext(ctx).Begin()
 	defer func() {
 		tx.Rollback()
 	}()
+
+	// Always lock the built-in row before the target policy so default promotions, demotions, and deletions share one global lock order
+	if policyID != BuiltInClaimMappingPolicyID {
+		if _, err := s.getClaimMappingPolicyInternal(ctx, tx, BuiltInClaimMappingPolicyID, true); err != nil && !errors.Is(err, apperror.NotFound("Claim mapping policy")) {
+			return &dto, err
+		}
+	}
 
 	// Lock the policy so concurrent updates and deletes on it are serialized
 	claimMappingPolicy, err := s.getClaimMappingPolicyInternal(ctx, tx, policyID, true)
@@ -308,17 +317,17 @@ func (s *Service) UpdateClaimMappingPolicy(ctx context.Context, policyID string,
 		return &dto, apperror.ValidationMessage("The built-in claim mapping policy can't be unset as default, set another policy as default instead")
 	}
 
-	err = tx.WithContext(ctx).Save(&claimMappingPolicy).Error
-	if err != nil {
-		return &dto, err
-	}
-
-	// Unset default for other claim mapping policies, in the same transaction so there is never more than one default
+	// Clear other defaults before saving the newly promoted default policy
 	if claimMappingPolicy.IsDefault {
-		err = tx.WithContext(ctx).Model(&OidcClaimMappingPolicy{}).Where("id != ?", claimMappingPolicy.ID).Update("is_default", false).Error
+		err = tx.WithContext(ctx).Model(&OidcClaimMappingPolicy{}).Where("id != ? AND is_default = ?", claimMappingPolicy.ID, true).Update("is_default", false).Error
 		if err != nil {
 			return &dto, err
 		}
+	}
+
+	err = tx.WithContext(ctx).Save(&claimMappingPolicy).Error
+	if err != nil {
+		return &dto, err
 	}
 
 	// Promote the built-in policy when the default one is unset, so clients without a policy keep getting claims
@@ -356,10 +365,17 @@ func updateClaimMappingPolicyFromDto(claimMappingPolicy *OidcClaimMappingPolicy,
 }
 
 func (s *Service) DeleteClaimMappingPolicy(ctx context.Context, policyID string) error {
-	tx := s.db.Begin()
+	tx := s.db.WithContext(ctx).Begin()
 	defer func() {
 		tx.Rollback()
 	}()
+
+	// Lock the built-in row first so deleting the current default shares the same lock order as default promotion and demotion
+	if policyID != BuiltInClaimMappingPolicyID {
+		if _, err := s.getClaimMappingPolicyInternal(ctx, tx, BuiltInClaimMappingPolicyID, true); err != nil && !errors.Is(err, apperror.NotFound("Claim mapping policy")) {
+			return err
+		}
+	}
 
 	// Lock the policy so no client can be assigned to it, and it cannot become the default, while it is being deleted
 	claimMappingPolicy, err := s.getClaimMappingPolicyInternal(ctx, tx, policyID, true)
@@ -428,6 +444,10 @@ func validateClaimMappings(mappings []OidcClaimMappingDto) error {
 			// Custom claim key validation
 			if len(mapping.SourceValue) == 0 || len(mapping.SourceValue) > 255 {
 				return apperror.ValidationMessage("invalid custom claim key length")
+			}
+			// Wildcard custom claims can only expand one-to-one with wildcard destination names
+			if mapping.SourceValue == "*" && mapping.ClaimName != "*" {
+				return apperror.ValidationMessage("wildcard custom claim source requires '*' as claim name")
 			}
 		case "static":
 			// Static values are always valid (string or JSON)

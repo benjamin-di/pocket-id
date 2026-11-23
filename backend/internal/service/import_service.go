@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"gorm.io/gorm"
@@ -326,25 +325,45 @@ func (s *ImportService) insertData(dbData DatabaseExport) error {
 		// Iterate through all tables
 		// Some tables need to be processed in order
 		tables := make([]string, 0, len(dbData.Tables))
-		tables = append(tables, dbData.TableOrder...)
-
-		for t := range dbData.Tables {
-			// Skip tables already present where the order matters, the schema_migrations table, and the actor host's own "francis_" tables in case they were included
-			if slices.Contains(dbData.TableOrder, t) || t == "schema_migrations" || strings.HasPrefix(t, "francis_") {
+		seen := make(map[string]struct{}, len(dbData.Tables))
+		for _, t := range dbData.TableOrder {
+			if t == "schema_migrations" || strings.HasPrefix(t, "francis_") {
 				continue
 			}
+			if _, ok := dbData.Tables[t]; !ok {
+				continue
+			}
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
 			tables = append(tables, t)
 		}
 
-		// Remove the rows that migrations seed (like the default claim mapping policy) so the exported rows don't collide with them
-		// The table order can list tables that don't exist in the schema, so only the tables carried by the export are cleared
-		for _, table := range slices.Backward(tables) {
-			if _, ok := dbData.Tables[table]; !ok {
+		for t := range dbData.Tables {
+			// Skip tables already present where the order matters, the schema_migrations table, and the actor host's own "francis_" tables in case they were included
+			if t == "schema_migrations" || strings.HasPrefix(t, "francis_") {
 				continue
 			}
-			err = tx.Exec("DELETE FROM " + table).Error
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
+			tables = append(tables, t)
+		}
+
+		// Validate every archive table against the loaded database schema before mutating any rows
+		for _, table := range tables {
+			if schema[table] == nil {
+				return fmt.Errorf("schema not found for table '%s'", table)
+			}
+		}
+
+		// Remove the built-in policy row seeded by migrations so the exported claim mapping policies don't collide with it
+		if _, ok := dbData.Tables["oidc_claim_mapping_policies"]; ok && schema["oidc_claim_mapping_policies"] != nil {
+			err = tx.Exec("DELETE FROM oidc_claim_mapping_policies").Error
 			if err != nil {
-				return fmt.Errorf("failed clearing table '%s': %w", table, err)
+				return fmt.Errorf("failed clearing seeded claim mapping policies: %w", err)
 			}
 		}
 

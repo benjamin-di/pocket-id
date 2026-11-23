@@ -191,14 +191,28 @@
 	claimMappingPolicies.set('', m.claim_mapping_policy_default());
 	let claimMappingPolicyService = new OidcClaimMappingPolicyService();
 	onMount(() => {
-		claimMappingPolicyService.listClaimMappingPolicies().then((data) => {
-			data.data.map((mapping: OidcClaimMappingPolicyMetadataDto) => {
-				claimMappingPolicies.set(mapping.id, mapping.name);
-			});
-		});
+		(async () => {
+			try {
+				let page = 1;
+				while (true) {
+					const res = await claimMappingPolicyService.listClaimMappingPolicies({
+						pagination: { page, limit: 100 }
+					});
+					for (const mapping of res.data as OidcClaimMappingPolicyMetadataDto[]) {
+						claimMappingPolicies.set(mapping.id, mapping.name);
+					}
+					if (page >= (res.pagination?.totalPages ?? 1) || res.data.length === 0) {
+						break;
+					}
+					page++;
+				}
+			} catch {
+				/* Keep default option selectable if policies fail to load */
+			}
+		})();
 	});
 	function getClaimMappingPolicyName(id: string) {
-		return claimMappingPolicies.get(id);
+		return claimMappingPolicies.get(id) ?? (id || m.claim_mapping_policy_default());
 	}
 </script>
 

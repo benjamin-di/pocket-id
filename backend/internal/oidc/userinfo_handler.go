@@ -64,7 +64,7 @@ func (h *userInfoHandler) userInfo(c *gin.Context) {
 		return
 	}
 
-	claimsSource, err := h.claimsService.loadUserClaimsSource(ctx, session.GetSubject(), accessRequest.GetClient().GetID())
+	claimsSource, err := h.claimsService.loadUserClaimsSourceForScopes(ctx, session.GetSubject(), accessRequest.GetClient().GetID(), accessRequest.GetGrantedScopes())
 	if err != nil {
 		// A token whose subject no longer resolves to a user is an authentication failure, not a missing resource
 		if errors.Is(err, errClaimsUserNotFound) {

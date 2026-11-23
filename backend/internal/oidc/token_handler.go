@@ -48,7 +48,7 @@ func (h *tokenHandler) token(c *gin.Context) {
 	client, ok := accessRequest.GetClient().(Client)
 	if ok {
 		// Re-validate the resource owner on every user-bound grant, loading at the same time everything the token claims are built from
-		claimsSource, err = h.claimsService.loadGrantClaimsSource(ctx, requestSession.Subject, client)
+		claimsSource, err = h.claimsService.loadGrantClaimsSource(ctx, requestSession.Subject, client, accessRequest.GetGrantedScopes())
 		if err != nil {
 			slog.WarnContext(ctx, "Rejected token request: user no longer allowed to access client", "error", err.Error())
 			h.provider.WriteAccessError(ctx, c.Writer, accessRequest, err)

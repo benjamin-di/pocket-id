@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pocket-id/fosite"
@@ -126,6 +127,14 @@ func redirectSecureChecker(allowInsecureCallbackURLs bool) func(context.Context,
 }
 
 func matchRedirectURI(rawurl string, client fosite.Client) (*url.URL, error) {
+	// Dynamically registered and CIMD clients register exact callback URIs and must never fall through to Fosite's decoded-path loopback or glob matching
+	if pocketClient, ok := client.(Client); ok && (pocketClient.isDynamicallyRegistered() || pocketClient.IsMetadataDocument()) {
+		if matched := matchExactOrLoopbackRedirectURI(client.GetRedirectURIs(), rawurl); matched != nil {
+			return matched, nil
+		}
+		return nil, fosite.ErrInvalidRequest.WithHint("The 'redirect_uri' parameter does not match any of the OAuth 2.0 Client's pre-registered 'redirect_uris'.")
+	}
+
 	redirectURI, err := fosite.MatchRedirectURIWithClientRedirectURIs(rawurl, client)
 	if err == nil || rawurl == "" {
 		return redirectURI, err
@@ -145,6 +154,90 @@ func matchRedirectURI(rawurl string, client fosite.Client) (*url.URL, error) {
 	}
 
 	return redirectURI, nil
+}
+
+// matchExactOrLoopbackRedirectURI requires exact string equality, allowing only RFC 8252 ephemeral port differences for HTTP loopback IP redirects
+func matchExactOrLoopbackRedirectURI(registered []string, rawurl string) *url.URL {
+	if rawurl == "" {
+		// Preserve RFC 6749 single-callback omission for plain OAuth requests; Fosite enforces OIDC's stricter requirement earlier
+		if len(registered) != 1 || strings.Contains(registered[0], "#") {
+			return nil
+		}
+		parsed, err := url.Parse(registered[0])
+		if err != nil || !fosite.IsValidRedirectURI(parsed) || parsed.User != nil {
+			return nil
+		}
+		return parsed
+	}
+	if strings.Contains(rawurl, "#") {
+		return nil
+	}
+	reqURL, err := url.Parse(rawurl)
+	if err != nil || !fosite.IsValidRedirectURI(reqURL) || reqURL.User != nil {
+		return nil
+	}
+	canonicalRaw := canonicalizeScheme(rawurl)
+	for _, candidate := range registered {
+		if canonicalizeScheme(candidate) == canonicalRaw {
+			return reqURL
+		}
+	}
+	reqStripped, ok := stripLoopbackPort(rawurl, reqURL)
+	if !ok {
+		return nil
+	}
+	for _, candidate := range registered {
+		if strings.Contains(candidate, "#") {
+			continue
+		}
+		regURL, parseErr := url.Parse(candidate)
+		if parseErr != nil || !fosite.IsValidRedirectURI(regURL) || regURL.User != nil {
+			continue
+		}
+		if candStripped, ok := stripLoopbackPort(candidate, regURL); ok && candStripped == reqStripped {
+			return reqURL
+		}
+	}
+	return nil
+}
+
+// canonicalizeScheme lowercases only the URI scheme prefix per RFC 3986 §3.1 while preserving all other raw bytes
+func canonicalizeScheme(raw string) string {
+	schemeEnd := strings.IndexByte(raw, ':')
+	if schemeEnd < 0 {
+		return raw
+	}
+	return strings.ToLower(raw[:schemeEnd]) + raw[schemeEnd:]
+}
+
+// stripLoopbackPort removes only the optional :port component from an HTTP loopback IP URI while preserving all other raw bytes
+func stripLoopbackPort(raw string, parsed *url.URL) (string, bool) {
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return "", false
+	}
+	host := parsed.Hostname()
+	if host != "127.0.0.1" && host != "::1" {
+		return "", false
+	}
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return "", false
+	}
+	authStart := schemeEnd + 3
+	rest := raw[authStart:]
+	authEnd := strings.IndexAny(rest, "/?")
+	if authEnd < 0 {
+		authEnd = len(rest)
+	}
+	authority := rest[:authEnd]
+	if port := parsed.Port(); port != "" {
+		suffix := ":" + port
+		if !strings.HasSuffix(authority, suffix) {
+			return "", false
+		}
+		authority = authority[:len(authority)-len(suffix)]
+	}
+	return "http" + raw[schemeEnd:authStart] + authority + rest[authEnd:], true
 }
 
 // DeriveGlobalSecret derives a 32-byte secret from the provided secret.

@@ -48,6 +48,11 @@ func (c Client) GetRedirectURIs() []string {
 	return c.CallbackURLs
 }
 
+// isDynamicallyRegistered reports whether the client was created via RFC 7591 dynamic client registration
+func (c Client) isDynamicallyRegistered() bool {
+	return !c.IsMetadataDocument() && strings.HasPrefix(c.ID, dcrClientIDPrefix) && len(c.MetadataGrantTypes) > 0
+}
+
 func (c Client) GetGrantTypes() fosite.Arguments {
 	grantTypes := fosite.Arguments{
 		string(fosite.GrantTypeAuthorizationCode),
@@ -58,7 +63,7 @@ func (c Client) GetGrantTypes() fosite.Arguments {
 		grantTypes = append(grantTypes, string(fosite.GrantTypeClientCredentials))
 	}
 
-	if !c.IsMetadataDocument() && (!strings.HasPrefix(c.ID, dcrClientIDPrefix) || len(c.MetadataGrantTypes) == 0) {
+	if !c.IsMetadataDocument() && !c.isDynamicallyRegistered() {
 		return grantTypes
 	}
 	if len(c.MetadataGrantTypes) == 0 {

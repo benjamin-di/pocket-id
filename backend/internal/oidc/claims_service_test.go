@@ -47,35 +47,35 @@ func TestClaimsServiceLoadGrantClaimsSource(t *testing.T) {
 	}}
 
 	t.Run("empty subject is allowed (client_credentials)", func(t *testing.T) {
-		src, err := claimsService.loadGrantClaimsSource(t.Context(), "", openClient)
+		src, err := claimsService.loadGrantClaimsSource(t.Context(), "", openClient, nil)
 		require.NoError(t, err)
 		require.Nil(t, src)
 	})
 
 	t.Run("enabled user is allowed", func(t *testing.T) {
-		src, err := claimsService.loadGrantClaimsSource(t.Context(), enabledUser.ID, openClient)
+		src, err := claimsService.loadGrantClaimsSource(t.Context(), enabledUser.ID, openClient, nil)
 		require.NoError(t, err)
 		require.Equal(t, enabledUser.ID, src.user.ID)
 	})
 
 	t.Run("disabled user is rejected with invalid_grant", func(t *testing.T) {
-		_, err := claimsService.loadGrantClaimsSource(t.Context(), disabledUser.ID, openClient)
+		_, err := claimsService.loadGrantClaimsSource(t.Context(), disabledUser.ID, openClient, nil)
 		require.ErrorIs(t, err, fosite.ErrInvalidGrant)
 	})
 
 	t.Run("user in an allowed group may use a group-restricted client", func(t *testing.T) {
-		src, err := claimsService.loadGrantClaimsSource(t.Context(), enabledUser.ID, restrictedClient)
+		src, err := claimsService.loadGrantClaimsSource(t.Context(), enabledUser.ID, restrictedClient, nil)
 		require.NoError(t, err)
 		require.Equal(t, enabledUser.ID, src.user.ID)
 	})
 
 	t.Run("user outside the allowed groups is rejected with access_denied", func(t *testing.T) {
-		_, err := claimsService.loadGrantClaimsSource(t.Context(), outsiderUser.ID, restrictedClient)
+		_, err := claimsService.loadGrantClaimsSource(t.Context(), outsiderUser.ID, restrictedClient, nil)
 		require.ErrorIs(t, err, fosite.ErrAccessDenied)
 	})
 
 	t.Run("deleted user is rejected with invalid_grant", func(t *testing.T) {
-		_, err := claimsService.loadGrantClaimsSource(t.Context(), "does-not-exist", openClient)
+		_, err := claimsService.loadGrantClaimsSource(t.Context(), "does-not-exist", openClient, nil)
 		require.ErrorIs(t, err, fosite.ErrInvalidGrant)
 	})
 }
@@ -103,19 +103,19 @@ func TestClaimsServiceLoadGrantClaimsSourceEmailVerification(t *testing.T) {
 	client := Client{OidcClient: model.OidcClient{Base: model.Base{ID: "client-open"}, Name: "Open"}}
 
 	t.Run("unverified user is rejected with invalid_grant", func(t *testing.T) {
-		_, err := claimsService.loadGrantClaimsSource(t.Context(), unverifiedUser.ID, client)
+		_, err := claimsService.loadGrantClaimsSource(t.Context(), unverifiedUser.ID, client, nil)
 		require.ErrorIs(t, err, fosite.ErrInvalidGrant)
 		require.Contains(t, fosite.ErrorToRFC6749Error(err).GetDescription(), emailVerificationRequiredHint)
 	})
 
 	t.Run("verified user is allowed", func(t *testing.T) {
-		src, err := claimsService.loadGrantClaimsSource(t.Context(), verifiedUser.ID, client)
+		src, err := claimsService.loadGrantClaimsSource(t.Context(), verifiedUser.ID, client, nil)
 		require.NoError(t, err)
 		require.Equal(t, verifiedUser.ID, src.user.ID)
 	})
 
 	t.Run("unverified admin is allowed", func(t *testing.T) {
-		src, err := claimsService.loadGrantClaimsSource(t.Context(), unverifiedAdmin.ID, client)
+		src, err := claimsService.loadGrantClaimsSource(t.Context(), unverifiedAdmin.ID, client, nil)
 		require.NoError(t, err)
 		require.Equal(t, unverifiedAdmin.ID, src.user.ID)
 	})
@@ -124,7 +124,7 @@ func TestClaimsServiceLoadGrantClaimsSourceEmailVerification(t *testing.T) {
 		cfg := appconfig.NewTestConfig(nil)
 		cfg.EmailVerification = appconfig.EmailVerificationOptional
 		optional := newClaimsService(db, nil, "", nil, appconfig.StaticResolver{Config: cfg})
-		src, err := optional.loadGrantClaimsSource(t.Context(), unverifiedUser.ID, client)
+		src, err := optional.loadGrantClaimsSource(t.Context(), unverifiedUser.ID, client, nil)
 		require.NoError(t, err)
 		require.Equal(t, unverifiedUser.ID, src.user.ID)
 	})

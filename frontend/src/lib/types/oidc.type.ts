@@ -12,6 +12,7 @@ export type OidcClientMetaData = {
 	requiresReauthentication: boolean;
 	launchURL?: string;
 	clientType: OidcClientType;
+	claimMappingPolicyId?: string;
 };
 
 export type OidcClientFederatedIdentity = {

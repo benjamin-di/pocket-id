@@ -50,7 +50,7 @@ func (s *interactionSessionService) get(ctx context.Context, id string) (Interac
 }
 
 func (s *interactionSessionService) update(ctx context.Context, interactionSession InteractionSession) error {
-	return dbFromContext(ctx, s.db).
+	result := dbFromContext(ctx, s.db).
 		Model(&InteractionSession{}).
 		Where("id = ?", interactionSession.ID).
 		Updates(map[string]any{
@@ -62,8 +62,14 @@ func (s *interactionSessionService) update(ctx context.Context, interactionSessi
 			"scopes":                     interactionSession.Scopes,
 			"reauthenticated_at":         interactionSession.ReauthenticatedAt,
 			"parameters":                 interactionSession.Parameters,
-		}).
-		Error
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (s *interactionSessionService) delete(ctx context.Context, id string) error {

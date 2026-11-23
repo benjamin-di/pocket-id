@@ -2,9 +2,10 @@
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import ApisService from '#lib/services/apis-service.ts';
+	import CustomClaimService from '#lib/services/custom-claim-service.ts';
 	import type {
 		OidcClaimMappingDto,
-		OidcClaimMappingPolicy,
 		OidcClaimMappingPolicySourceType,
 		OidcUserField
 	} from '#lib/types/oidc-claim-mapping-policy.type.ts';
@@ -12,18 +13,16 @@
 	import AdvancedTable from '#lib/components/table/advanced-table.svelte';
 	import type { AdvancedTableColumn } from '#lib/types/advanced-table.type.ts';
 	import type { ListRequestOptions, Paginated } from '#lib/types/list-request.type.ts';
+	import { onMount } from 'svelte';
 	import OidcClaimMappingModal from './oidc-claim-mapping-modal.svelte';
-	import { z } from 'zod/v4';
-	import { createForm } from '#lib/utils/form-util.ts';
-	import { trackFormChanges } from '#lib/utils/unsaved-changes-util.svelte.ts';
 
 	let {
-		policy,
-		onClaimMappingsSave,
+		policyId,
+		claimMappings = $bindable(),
 		readOnly = false
 	}: {
-		policy: OidcClaimMappingPolicy;
-		onClaimMappingsSave: (policy: OidcClaimMappingPolicy) => Promise<void>;
+		policyId: string;
+		claimMappings: OidcClaimMappingDto[];
 		readOnly?: boolean;
 	} = $props();
 
@@ -33,13 +32,35 @@
 	let editing = $state<OidcClaimMappingDto | null>(null);
 	let modalOpen = $state(false);
 	let editingIndex = $state(-1);
-	// Bumped on every open so the modal is rebuilt: it snapshots the mapping into its form when it is
-	// created, so reusing the instance would keep showing the previously edited claim
 	let editingKey = $state(0);
 
-	let claimMappings = $state<OidcClaimMappingDto[]>(policy.claimMappings ?? []);
+	let apiScopes = $state<string[]>([]);
+	let customClaimKeysSuggestions = $state<string[]>([]);
 
-	// Add a new empty claim mapping
+	onMount(() => {
+		if (readOnly) return;
+		new ApisService()
+			.listAll()
+			.then((apis) => {
+				apiScopes = apis.flatMap((api) => api.permissions.map((permission) => permission.key));
+			})
+			.catch(() => {
+				/* Keep standard and already selected scopes available when API listing is unavailable */
+			});
+		new CustomClaimService()
+			.getSuggestions()
+			.then((data) => {
+				customClaimKeysSuggestions = data;
+			})
+			.catch(() => {
+				/* Keep custom claim input functional when suggestions fail to load */
+			});
+	});
+
+	export function refresh() {
+		return tableRef?.refresh();
+	}
+
 	function addClaimMapping() {
 		editing = {
 			claimName: '',
@@ -55,9 +76,7 @@
 		modalOpen = true;
 	}
 
-	// Edit a claim mapping at index
 	function editClaimMapping(item: OidcClaimMappingRow) {
-		// Drop the row id, which is a table concern the mapping itself has no field for
 		const { id, ...mapping } = item;
 		editing = mapping;
 		editingIndex = Number(id);
@@ -65,58 +84,27 @@
 		modalOpen = true;
 	}
 
-	// end of edition
 	async function onSaveClaimMapping(mapping: OidcClaimMappingDto, index: number) {
 		modalOpen = false;
 		editing = null;
 		editingIndex = -1;
-		await persist(
+		claimMappings =
 			index === -1
 				? [...claimMappings, mapping]
-				: claimMappings.map((entry, i) => (i === index ? mapping : entry))
-		);
-	}
-
-	// Remove a claim mapping at index
-	async function removeClaimMapping(index: string) {
-		await persist(claimMappings.filter((_, i) => i !== Number(index)));
-	}
-
-	const formSchema = z.object({
-		id: z.string().optional(),
-		name: z.string(),
-		isDefault: z.boolean(),
-		claimMappings: z.array(
-			z.object({
-				claimName: z.string().min(1),
-				sourceType: z.enum(['user_field', 'custom_claim', 'static']),
-				sourceValue: z.string().min(1),
-				scope: z
-					.array(
-						z
-							.string()
-							.min(1)
-							.max(128)
-							.regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/)
-					)
-					.min(1),
-				accessToken: z.boolean(),
-				idToken: z.boolean(),
-				userInfo: z.boolean()
-			})
-		)
-	});
-	const formStore = createForm(formSchema, policy);
-	const { inputs } = formStore;
-	trackFormChanges(() => formStore, onClaimMappingsSave, { discard: () => tableRef?.refresh() });
-
-	// Send the updated mappings to the server, keeping the rest of the policy untouched
-	async function persist(updated: OidcClaimMappingDto[]) {
-		$inputs.claimMappings.value = updated;
+				: claimMappings.map((entry, i) => (i === index ? mapping : entry));
 		await tableRef?.refresh();
 	}
 
-	// Get user field source for display
+	async function removeClaimMapping(index: string) {
+		const target = Number(index);
+		claimMappings = claimMappings.filter((_, i) => i !== target);
+		await tableRef?.refresh();
+	}
+
+	const existingClaimNamesForModal = $derived(
+		claimMappings.filter((_, i) => i !== editingIndex).map((entry) => entry.claimName)
+	);
+
 	function getSourceTypeLabel(field: OidcClaimMappingPolicySourceType): string {
 		const labels: Record<OidcClaimMappingPolicySourceType, string> = {
 			user_field: m.user_field(),
@@ -126,7 +114,6 @@
 		return labels[field] || field;
 	}
 
-	// Get user field label for display
 	function getUserFieldLabel(field: OidcUserField): string {
 		const labels: Record<OidcUserField, string> = {
 			id: m.user_identifier(),
@@ -152,24 +139,25 @@
 		{ label: m.access_token(), column: 'accessToken', hidden: true },
 		{ label: m.id_token(), column: 'idToken', hidden: true },
 		{ label: m.userinfo(), column: 'userInfo', hidden: true },
-		// A read-only policy has no actions column at all, so it cannot be re-enabled from the column picker
 		...(readOnly ? [] : [{ label: '', key: 'actions', cell: OidcClaimMappingActionsCell }])
 	];
 
 	async function fetchCallback(
 		options: ListRequestOptions
 	): Promise<Paginated<OidcClaimMappingRow>> {
-		const page = options.pagination?.page || 1;
 		const limit = options.pagination?.limit || 20;
+		const totalItems = claimMappings.length;
+		const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+		const page = Math.min(Math.max(options.pagination?.page || 1, 1), totalPages);
 		return {
-			data: $inputs.claimMappings.value
+			data: claimMappings
 				.map((entry, index) => ({ ...entry, id: String(index) }))
 				.slice((page - 1) * limit, page * limit),
 			pagination: {
 				currentPage: page,
 				itemsPerPage: limit,
-				totalItems: claimMappings.length,
-				totalPages: 1
+				totalItems,
+				totalPages
 			}
 		};
 	}
@@ -189,14 +177,25 @@
 
 {#snippet OidcClaimMappingActionsCell({ item }: { item: OidcClaimMappingRow })}
 	<div class="flex justify-end gap-1">
-		<Button variant="ghost" size="sm" aria-label={m.edit()} onclick={() => editClaimMapping(item)}>
+		<Button
+			variant="ghost"
+			size="sm"
+			aria-label={m.edit()}
+			onclick={(e: MouseEvent) => {
+				e.stopPropagation();
+				editClaimMapping(item);
+			}}
+		>
 			<LucidePencil class="size-4" />
 		</Button>
 		<Button
 			variant="ghost"
 			size="sm"
 			aria-label={m.remove_claim_mapping()}
-			onclick={() => removeClaimMapping(item.id)}
+			onclick={(e: MouseEvent) => {
+				e.stopPropagation();
+				removeClaimMapping(item.id);
+			}}
 		>
 			<LucideTrash class="size-4" />
 		</Button>
@@ -219,7 +218,7 @@
 	</Card.Header>
 	<Card.Content>
 		<AdvancedTable
-			id={`claim-mappings-${policy.id}`}
+			id={`claim-mappings-${policyId}`}
 			bind:this={tableRef}
 			withoutSearch
 			{fetchCallback}
@@ -234,6 +233,9 @@
 		<OidcClaimMappingModal
 			index={editingIndex}
 			mapping={editing}
+			existingClaimNames={existingClaimNamesForModal}
+			{apiScopes}
+			{customClaimKeysSuggestions}
 			onSave={onSaveClaimMapping}
 			bind:open={modalOpen}
 		/>

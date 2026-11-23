@@ -67,15 +67,25 @@
 		}
 	}
 
+	let usersLoaded = $state(false);
+	let latestUserSearchRequest = 0;
+
 	async function loadUsers(search?: string) {
-		users = (
-			await userService.list({
+		const request = ++latestUserSearchRequest;
+		try {
+			const res = await userService.list({
 				search,
 				pagination: { limit: 10, page: 1 }
-			})
-		).data;
-		if (!user) {
-			user = users[0] ?? null;
+			});
+			if (request !== latestUserSearchRequest) return;
+			users = res.data;
+			usersLoaded = true;
+			if (!user) {
+				user = users[0] ?? null;
+			}
+		} catch (e) {
+			if (request !== latestUserSearchRequest) return;
+			errorMessage = getAxiosErrorMessage(e);
 		}
 	}
 
@@ -98,7 +108,7 @@
 
 	// The user list is only needed once the dialog is opened
 	$effect(() => {
-		if (open && users.length === 0) {
+		if (open && !usersLoaded) {
 			loadUsers();
 		}
 	});

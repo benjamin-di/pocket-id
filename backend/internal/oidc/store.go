@@ -165,6 +165,7 @@ func (s *Store) LoadCIMDClient(ctx context.Context, id string) (fosite.CIMDCache
 	if err != nil {
 		return fosite.CIMDCachedClient{}, false, err
 	}
+	// An invalidated metadata entry (MetadataExpiresAt == nil) receives a zero expiry, which is outside StaleIfUnavailable while still allowing forced manual refresh
 	var expiresAt time.Time
 	if clientModel.MetadataExpiresAt != nil {
 		expiresAt = time.Time(*clientModel.MetadataExpiresAt)
@@ -201,6 +202,45 @@ func (s *Store) StoreCIMDClient(ctx context.Context, resolved fosite.Client, _ *
 			changes = metadataClientChanges(existing, client.OidcClient)
 			// Every detected change except the display name invalidates what the user agreed to
 			revokeConsent = slices.ContainsFunc(changes, func(field string) bool { return field != "client_name" })
+		}
+
+		// Register rollback recovery before mutating rows so cancellation or caller rollback never discards a detected metadata change or grant revocation
+		if revokeConsent {
+			priorModel := existing
+			updatedModel := client.OidcClient
+			afterTxRollback(ctx, func(cleanCtx context.Context) {
+				cleanupCtx, cancel := context.WithTimeout(cleanCtx, 10*time.Second)
+				defer cancel()
+				if persistErr := withTx(cleanupCtx, s.db, func(txCtx context.Context) error {
+					var current model.OidcClient
+					lockErr := s.dbFor(txCtx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", updatedModel.ID).First(&current).Error
+					if errors.Is(lockErr, gorm.ErrRecordNotFound) {
+						return nil
+					}
+					if lockErr != nil {
+						return lockErr
+					}
+					if !current.IsMetadataDocument() {
+						return nil
+					}
+					// Never restore a row that was invalidated by a mismatch or already updated by another refresh (including an expiry-only refresh) after rollback
+					if current.MetadataExpiresAt == nil ||
+						!metadataExpiresAtEqual(priorModel.MetadataExpiresAt, current.MetadataExpiresAt) ||
+						len(metadataClientChanges(priorModel, current)) > 0 {
+						return nil
+					}
+					if err := s.upsertMetadataClient(txCtx, s.dbFor(txCtx), &updatedModel, true); err != nil {
+						return err
+					}
+					_, err := s.revokeClientGrants(txCtx, updatedModel.ID)
+					return err
+				}); persistErr != nil {
+					slog.ErrorContext(cleanupCtx, "Failed to persist CIMD metadata change and grant revocation after caller rollback",
+						slog.String("client_id", updatedModel.ID),
+						slog.Any("error", persistErr),
+					)
+				}
+			})
 		}
 
 		// Persist the refreshed metadata and consent invalidation together so a failed deletion cannot suppress the next revocation attempt
@@ -240,9 +280,23 @@ func (s *Store) StoreCIMDClient(ctx context.Context, resolved fosite.Client, _ *
 	return stored, nil
 }
 
-// revokeClientGrants deletes every consent users gave to a client together with the tokens issued under it, and returns how many of both it deleted
-// The caller runs it in a transaction so a client never keeps tokens whose consent is gone
+// revokeClientGrants deletes every consent users gave to a client together with the tokens and pending interactions issued under it, and returns how many rows it deleted
+// The caller runs it in a transaction so a client never keeps tokens or pending approvals whose consent is gone
 func (s *Store) revokeClientGrants(ctx context.Context, clientID string) (int64, error) {
+	// Lock the client row first to serialize revocation with concurrent browser consent completion
+	var lockedClient model.OidcClient
+	if err := s.dbFor(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", clientID).First(&lockedClient).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, fmt.Errorf("failed to lock client for grant revocation: %w", err)
+	}
+
+	// Delete pending browser interactions first so no in-flight approval can commit after consents are swept
+	interactions := s.dbFor(ctx).
+		Where("client_id = ?", clientID).
+		Delete(&InteractionSession{})
+	if interactions.Error != nil {
+		return 0, fmt.Errorf("failed to revoke pending interactions of the client: %w", interactions.Error)
+	}
+
 	consents := s.dbFor(ctx).
 		Where("client_id = ?", clientID).
 		Delete(&model.UserAuthorizedOidcClient{})
@@ -257,7 +311,23 @@ func (s *Store) revokeClientGrants(ctx context.Context, clientID string) (int64,
 	if tokens.Error != nil {
 		return 0, fmt.Errorf("failed to revoke the tokens of the client: %w", tokens.Error)
 	}
-	return consents.RowsAffected + tokens.RowsAffected, nil
+
+	return consents.RowsAffected + tokens.RowsAffected + interactions.RowsAffected, nil
+}
+
+// invalidateCIMDClientCache clears metadata_expires_at so a rejected metadata document cannot be served fresh or stale until a valid fetch succeeds
+func (s *Store) invalidateCIMDClientCache(ctx context.Context, clientID string) error {
+	return s.dbFor(ctx).
+		Model(&model.OidcClient{}).
+		Where("id = ? AND client_type = ?", clientID, model.OidcClientTypeCIMD).
+		Update("metadata_expires_at", nil).Error
+}
+
+func metadataExpiresAtEqual(a, b *datatype.DateTime) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.ToTime().Equal(b.ToTime())
 }
 
 // metadataClientChanges returns the names of security-relevant metadata fields that differ between the stored client and a freshly fetched one
@@ -569,12 +639,35 @@ func (s *Store) CreateOpenIDConnectSession(ctx context.Context, authorizeCode st
 	return s.upsertSession(ctx, sessionKindOpenID, authorizeCode, requester, "", true, expiresAtKey)
 }
 
-func (s *Store) GetOpenIDConnectSession(ctx context.Context, authorizeCode string, _ fosite.Requester) (fosite.Requester, error) {
+func (s *Store) GetOpenIDConnectSession(ctx context.Context, authorizeCode string, requester fosite.Requester) (fosite.Requester, error) {
 	request, _, err := s.getRequesterSession(ctx, sessionKindOpenID, authorizeCode)
 	if errors.Is(err, fosite.ErrNotFound) {
 		return nil, openid.ErrNoSessionFound
 	}
-	return request, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy freshly computed ID-token claims from the live token request onto the stored OpenID session while preserving nonce, auth_time, and grant binding
+	if requester != nil {
+		liveSession, liveOK := requester.GetSession().(*Session)
+		storedSession, storedOK := request.GetSession().(*Session)
+		if liveOK && storedOK && liveSession.Claims != nil && len(liveSession.Claims.Extra) > 0 {
+			storedClaims := storedSession.IDTokenClaims()
+			freshExtra := make(map[string]any, len(liveSession.Claims.Extra))
+			for k, v := range liveSession.Claims.Extra {
+				freshExtra[k] = v
+			}
+			storedClaims.Extra = freshExtra
+			if liveSession.Headers != nil && len(liveSession.Headers.Extra) > 0 {
+				for k, v := range liveSession.Headers.Extra {
+					storedSession.IDTokenHeaders().Add(k, v)
+				}
+			}
+		}
+	}
+
+	return request, nil
 }
 
 func (s *Store) DeleteOpenIDConnectSession(ctx context.Context, authorizeCode string) error {

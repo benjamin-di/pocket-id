@@ -13,6 +13,7 @@
 
 <DropdownMenu.Root>
 	<DropdownMenu.Trigger
+		aria-label={m.view()}
 		class={buttonVariants({
 			variant: 'outline',
 			size: 'sm',

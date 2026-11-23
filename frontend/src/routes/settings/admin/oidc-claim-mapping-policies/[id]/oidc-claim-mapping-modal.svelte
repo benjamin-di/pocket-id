@@ -1,5 +1,4 @@
 <script lang="ts">
-	import ApisService from '#lib/services/apis-service.ts';
 	import FormInput from '#lib/components/form/form-input.svelte';
 	import MultiSelect from '#lib/components/form/multi-select.svelte';
 	import SwitchWithLabel from '#lib/components/form/switch-with-label.svelte';
@@ -18,18 +17,22 @@
 	import { z } from 'zod/v4';
 	import Button from '#lib/components/ui/button/button.svelte';
 	import AutoCompleteInput from '#lib/components/form/auto-complete-input.svelte';
-	import CustomClaimService from '#lib/services/custom-claim-service.ts';
-	import { onMount } from 'svelte';
 
 	let {
 		open = $bindable(),
 		mapping,
 		index,
+		existingClaimNames = [],
+		apiScopes = [],
+		customClaimKeysSuggestions = [],
 		onSave
 	}: {
 		open: boolean;
 		mapping: OidcClaimMappingDto;
 		index: number;
+		existingClaimNames?: string[];
+		apiScopes?: string[];
+		customClaimKeysSuggestions?: string[];
 		onSave: (mapping: OidcClaimMappingDto, index: number) => void;
 	} = $props();
 
@@ -63,7 +66,6 @@
 	];
 
 	// Available scopes
-	let apiScopes: string[] = $state([]);
 	const standardScopes = [
 		'openid',
 		'profile',
@@ -110,31 +112,53 @@
 	}
 
 	// Form validation schema for a single claim mapping
-	const claimMappingSchema = z.object({
-		claimName: z
-			.string()
-			.min(1)
-			.refine(
-				(value) => !RESERVED_CLAIM_NAMES.includes(value as (typeof RESERVED_CLAIM_NAMES)[number]),
-				{
-					message: m.this_claim_name_is_reserved_and_cannot_be_remapped()
+	const claimMappingSchema = z
+		.object({
+			claimName: z
+				.string()
+				.min(1)
+				.refine(
+					(value) => !RESERVED_CLAIM_NAMES.includes(value as (typeof RESERVED_CLAIM_NAMES)[number]),
+					{
+						message: m.this_claim_name_is_reserved_and_cannot_be_remapped()
+					}
+				)
+				.refine((value) => !existingClaimNames.includes(value), {
+					message: 'A mapping for this claim name already exists'
+				}),
+			sourceType: z.enum(['user_field', 'custom_claim', 'static']),
+			sourceValue: z.string().min(1),
+			scope: z
+				.array(
+					z
+						.string()
+						.min(1)
+						.max(128)
+						.regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/)
+				)
+				.min(1),
+			accessToken: z.boolean(),
+			idToken: z.boolean(),
+			userInfo: z.boolean()
+		})
+		.superRefine((val, ctx) => {
+			if (val.sourceType === 'custom_claim') {
+				if (val.sourceValue.length > 255) {
+					ctx.addIssue({
+						code: 'custom',
+						path: ['sourceValue'],
+						message: 'Custom claim key must be at most 255 characters'
+					});
 				}
-			),
-		sourceType: z.enum(['user_field', 'custom_claim', 'static']),
-		sourceValue: z.string().min(1),
-		scope: z
-			.array(
-				z
-					.string()
-					.min(1)
-					.max(128)
-					.regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/)
-			)
-			.min(1),
-		accessToken: z.boolean(),
-		idToken: z.boolean(),
-		userInfo: z.boolean()
-	});
+				if (val.sourceValue === '*' && val.claimName !== '*') {
+					ctx.addIssue({
+						code: 'custom',
+						path: ['claimName'],
+						message: "Wildcard custom claim source requires '*' as claim name"
+					});
+				}
+			}
+		});
 	type FormSchema = typeof claimMappingSchema;
 	const { inputs, ...form } = createForm<FormSchema>(claimMappingSchema, mapping);
 
@@ -146,22 +170,6 @@
 		onSave(data, index);
 		open = false;
 	}
-
-	// custom claim keys suggestions
-	const customClaimService = new CustomClaimService();
-
-	let customClaimKeysSuggestions: string[] = $state([]);
-	onMount(() => {
-		new ApisService()
-			.listAll()
-			.then((apis) => {
-				apiScopes = apis.flatMap((api) => api.permissions.map((permission) => permission.key));
-			})
-			.catch(() => {
-				/* Keep standard and already selected scopes available when API listing is unavailable */
-			});
-		customClaimService.getSuggestions().then((data) => (customClaimKeysSuggestions = data));
-	});
 </script>
 
 <Dialog.Root bind:open>

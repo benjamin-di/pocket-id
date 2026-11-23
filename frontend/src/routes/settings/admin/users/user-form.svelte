@@ -63,9 +63,13 @@
 	const { inputs } = formStore;
 
 	async function saveUser(data: z.infer<FormSchema>) {
-		// General profile edits must leave membership changes to the dedicated Groups tab
+		// General profile edits must leave membership changes to the dedicated Groups tab while preserving the user's locale
 		const { userGroupIds, ...profile } = data;
-		await callback(existingUser ? profile : { ...profile, userGroupIds });
+		await callback(
+			existingUser
+				? { ...profile, locale: existingUser.locale }
+				: { ...profile, userGroupIds }
+		);
 		// Reset form if user was successfully created
 		if (!existingUser) formStore.reset();
 	}
@@ -155,7 +159,12 @@
 		</div>
 		{#if !existingUser}
 			<div class="mt-5">
-				<FormInput labelFor="default-groups" label={m.user_groups()} input={$inputs.userGroupIds}>
+				<FormInput
+					labelFor="default-groups"
+					label={m.user_groups()}
+					description="Leave empty to apply configured default signup groups. Selecting any group replaces the defaults."
+					input={$inputs.userGroupIds}
+				>
 					<UserGroupInput bind:selectedGroupIds={$inputs.userGroupIds.value} />
 				</FormInput>
 			</div>

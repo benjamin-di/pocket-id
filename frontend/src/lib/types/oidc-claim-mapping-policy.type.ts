@@ -5,6 +5,7 @@ export type OidcClaimMappingPolicySourceType = 'user_field' | 'custom_claim' | '
  * `reservedClaimsForMapping` in the backend's oidc_claim_mapping_policy_service.go.
  */
 export const RESERVED_CLAIM_NAMES = [
+	'sub',
 	'iss',
 	'aud',
 	'exp',

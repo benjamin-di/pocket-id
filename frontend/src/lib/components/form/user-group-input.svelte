@@ -18,20 +18,43 @@
 
 	let userGroups = $state<{ value: string; label: string }[]>([]);
 	let isLoading = $state(false);
+	const labelCache = new Map<string, string>();
+	let latestRequestId = 0;
 
 	async function loadUserGroups(search?: string) {
-		userGroups = (await userGroupService.list({ search })).data.map((group) => ({
-			value: group.id,
-			label: group.friendlyName || group.name
-		}));
+		const requestId = ++latestRequestId;
+		const listed = (await userGroupService.list({ search })).data.map((group) => {
+			const label = group.friendlyName || group.name;
+			labelCache.set(group.id, label);
+			return { value: group.id, label };
+		});
+		if (requestId !== latestRequestId) return;
 
-		// Ensure selected groups are still in the list
-		for (const selectedGroupId of selectedGroupIds) {
-			if (!userGroups.some((g) => g.value === selectedGroupId)) {
-				const group = await userGroupService.get(selectedGroupId);
-				userGroups.push({ value: group.id, label: group.friendlyName || group.name });
+		const missingIds = selectedGroupIds.filter(
+			(selectedId) => !listed.some((g) => g.value === selectedId) && !labelCache.has(selectedId)
+		);
+		if (missingIds.length > 0) {
+			const fetched = await Promise.allSettled(
+				missingIds.map((missingId) => userGroupService.get(missingId))
+			);
+			if (requestId !== latestRequestId) return;
+			for (const result of fetched) {
+				if (result.status === 'fulfilled') {
+					labelCache.set(result.value.id, result.value.friendlyName || result.value.name);
+				}
 			}
 		}
+
+		const merged = [...listed];
+		for (const selectedId of selectedGroupIds) {
+			if (!merged.some((g) => g.value === selectedId)) {
+				const cachedLabel = labelCache.get(selectedId);
+				if (cachedLabel) {
+					merged.push({ value: selectedId, label: cachedLabel });
+				}
+			}
+		}
+		userGroups = merged;
 	}
 
 	const onUserGroupSearch = debounced(
@@ -40,7 +63,11 @@
 		(loading) => (isLoading = loading)
 	);
 
-	onMount(() => loadUserGroups());
+	onMount(() => {
+		loadUserGroups().catch(() => {
+			/* Ignore initial lookup failure; user can retry via search */
+		});
+	});
 </script>
 
 <SearchableMultiSelect

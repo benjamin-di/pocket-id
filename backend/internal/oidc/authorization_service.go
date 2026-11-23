@@ -13,6 +13,7 @@ import (
 
 	"github.com/pocket-id/fosite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/auditlogs"
@@ -146,6 +147,28 @@ func (s *authorizationService) authorize(ctx context.Context, input authorizeInp
 		return authorizationResult{}, err
 	}
 
+	// Lock the client row and revalidate CIMD/DCR metadata and callbacks before any redirectable error (including prompt=none) or code issuance
+	if client.IsMetadataDocument() || client.isDynamicallyRegistered() {
+		var lockedClient model.OidcClient
+		lockErr := dbFromContext(ctx, s.db).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", client.GetID()).First(&lockedClient).Error
+		if errors.Is(lockErr, gorm.ErrRecordNotFound) {
+			return authorizationResult{}, fosite.ErrInvalidClient.WithHint("The client is no longer valid.")
+		}
+		if lockErr != nil {
+			return authorizationResult{}, lockErr
+		}
+		if client.IsMetadataDocument() && lockedClient.MetadataExpiresAt == nil {
+			return authorizationResult{}, fosite.ErrInvalidClient.WithHint("The client metadata document is no longer valid.")
+		}
+		if redirectURI := input.requester.GetRedirectURI(); redirectURI != nil {
+			rawRedirect := input.requester.GetRequestForm().Get("redirect_uri")
+			matched := matchExactOrLoopbackRedirectURI([]string(lockedClient.CallbackURLs), rawRedirect)
+			if matched == nil || matched.String() != redirectURI.String() {
+				return authorizationResult{}, fosite.ErrInvalidClient.WithHint("The 'redirect_uri' parameter no longer matches the client metadata.")
+			}
+		}
+	}
+
 	if input.userID == "" {
 		if prompt.has("none") {
 			return authorizationResult{}, fosite.ErrLoginRequired
@@ -176,6 +199,13 @@ func (s *authorizationService) authorize(ctx context.Context, input authorizeInp
 
 	var result authorizationResult
 	err = withTx(ctx, s.db, func(ctx context.Context) error {
+		if !client.IsMetadataDocument() && !client.isDynamicallyRegistered() {
+			var lockedClient model.OidcClient
+			if lockErr := dbFromContext(ctx, s.db).Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", client.GetID()).First(&lockedClient).Error; lockErr != nil && !errors.Is(lockErr, gorm.ErrRecordNotFound) {
+				return lockErr
+			}
+		}
+
 		var txErr error
 		result, txErr = s.authorizeAuthenticated(ctx, req)
 		if txErr != nil {
@@ -193,7 +223,7 @@ func (s *authorizationService) authorize(ctx context.Context, input authorizeInp
 		}
 
 		// Build the token claims inside the transaction so they see the same data as the grant
-		claimsSource, txErr := s.claimsService.loadUserClaimsSource(ctx, result.Session.Subject, client.GetID())
+		claimsSource, txErr := s.claimsService.loadUserClaimsSourceForScopes(ctx, result.Session.Subject, client.GetID(), input.requester.GetGrantedScopes())
 		if txErr != nil {
 			return txErr
 		}
@@ -593,6 +623,19 @@ func (s *authorizationService) completeInteractionStep(ctx context.Context, inte
 	var response completeInteractionResponse
 	err := withTx(ctx, s.db, func(ctx context.Context) error {
 		var err error
+		interactionSession, err = s.interactionSessionService.get(ctx, interactionSessionID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperror.OidcInteractionNotFound()
+		}
+		if err != nil {
+			return err
+		}
+
+		// Lock the client row and re-read the interaction so consent completion is serialized with concurrent CIMD grant revocation
+		var lockedClient model.OidcClient
+		if err := dbFromContext(ctx, s.db).Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", interactionSession.ClientID).First(&lockedClient).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
 		interactionSession, err = s.interactionSessionService.get(ctx, interactionSessionID)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperror.OidcInteractionNotFound()

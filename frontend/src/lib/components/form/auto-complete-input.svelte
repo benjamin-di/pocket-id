@@ -16,6 +16,9 @@
 		disabled?: boolean;
 	} = $props();
 
+	const instanceId = $props.id();
+	const listboxId = `${instanceId}-suggestions`;
+
 	let filteredSuggestions: string[] = $state(suggestions.slice(0, suggestionLimit));
 	let selectedIndex = $state(-1);
 
@@ -28,7 +31,7 @@
 
 	function handleOnInput() {
 		filteredSuggestions = suggestions
-			.filter((s) => s.includes(value.toLowerCase()))
+			.filter((s) => s.toLowerCase().includes(value.toLowerCase()))
 			.slice(0, suggestionLimit);
 	}
 
@@ -36,9 +39,11 @@
 		if (!isOpen) return;
 		switch (e.key) {
 			case 'ArrowDown':
+				e.preventDefault();
 				selectedIndex = Math.min(selectedIndex + 1, filteredSuggestions.length - 1);
 				break;
 			case 'ArrowUp':
+				e.preventDefault();
 				selectedIndex = Math.max(selectedIndex - 1, -1);
 				break;
 			case 'Enter':
@@ -54,6 +59,9 @@
 	}
 
 	let isOpen = $derived(filteredSuggestions.length > 0 && isInputFocused);
+	let activeOptionId = $derived(
+		isOpen && selectedIndex >= 0 ? `${listboxId}-option-${selectedIndex}` : undefined
+	);
 
 	$effect(() => {
 		// Reset selection when suggestions change
@@ -65,25 +73,26 @@
 	$effect(() => handleOnInput());
 </script>
 
-<div
-	class="grid w-full"
-	role="combobox"
-	onkeydown={handleKeydown}
-	aria-controls="suggestion-list"
-	aria-expanded={isOpen}
-	tabindex="-1"
->
+<div class="grid w-full">
 	<Input
 		{placeholder}
 		{disabled}
 		bind:value
+		role="combobox"
+		aria-autocomplete="list"
+		aria-controls={listboxId}
+		aria-expanded={isOpen}
+		aria-activedescendant={activeOptionId}
 		oninput={handleOnInput}
+		onkeydown={handleKeydown}
 		onfocus={() => (isInputFocused = true)}
 		onblur={() => (isInputFocused = false)}
 	/>
 	<Popover.Root open={isOpen}>
 		<Popover.Trigger tabindex={-1} class="h-0 w-full" aria-hidden />
 		<Popover.Content
+			id={listboxId}
+			role="listbox"
 			class="gap-0! px-1 py-2"
 			sameWidth
 			sideOffset={5}
@@ -96,11 +105,13 @@
 		>
 			{#each filteredSuggestions as suggestion, index (suggestion)}
 				<div
-					role="button"
-					tabindex="0"
-					onmousedown={() => handleSuggestionClick(suggestion)}
-					onkeydown={(e) => {
-						if (e.key === 'Enter') handleSuggestionClick(suggestion);
+					id={`${listboxId}-option-${index}`}
+					role="option"
+					aria-selected={selectedIndex === index}
+					tabindex="-1"
+					onmousedown={(e) => {
+						e.preventDefault();
+						handleSuggestionClick(suggestion);
 					}}
 					class="hover:bg-accent hover:text-accent-foreground relative flex w-full cursor-default items-center rounded-full py-1.5 pr-2 pl-8 text-sm outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 {selectedIndex ===
 					index

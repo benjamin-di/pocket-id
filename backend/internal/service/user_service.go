@@ -91,10 +91,10 @@ func (s *UserService) ListUsers(ctx context.Context, searchTerm string, listRequ
 			}
 			groupIDs = append(groupIDs, id)
 		}
-		membership := s.db.Table("user_groups_users").Select("1").
-			Where("user_groups_users.user_id = users.id").
-			Where("user_groups_users.user_group_id IN ?", groupIDs)
-		query = query.Where("EXISTS (?)", membership)
+		membership := s.db.Table("user_groups_users").
+			Select("user_id").
+			Where("user_group_id IN ?", groupIDs)
+		query = query.Where("users.id IN (?)", membership)
 	}
 
 	pagination, err := utils.PaginateFilterAndSort(listRequestOptions, query, &users)

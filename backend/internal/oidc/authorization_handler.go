@@ -13,6 +13,7 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/authz"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
+	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/cookie"
 )
@@ -70,16 +71,32 @@ func (h *authorizationHandler) authorize(c *gin.Context) {
 		return
 	}
 
-	authorization, err := h.authorizationService.authorize(ctx, authorizeInput{
-		userID:                        principal.UserID,
-		authenticationMethod:          principal.AuthenticationMethod,
-		authenticationTime:            principal.AuthenticationTime,
-		requester:                     ar,
-		hasPushedAuthorizationRequest: hasPushedAuthorizationRequest,
-		reauthenticationToken:         reauthenticationToken,
-		interactionID:                 interactionID,
-		requestParams:                 authorizeRequestParams(ar),
-		meta:                          requestMetaFromGin(c),
+	var (
+		authorization authorizationResult
+		response      fosite.AuthorizeResponder
+	)
+	// Keep authorization checks and authorization-code persistence in one transaction so concurrent CIMD grant revocation cannot race between them
+	err = withTx(ctx, h.authorizationService.db, func(txCtx context.Context) error {
+		var txErr error
+		authorization, txErr = h.authorizationService.authorize(txCtx, authorizeInput{
+			userID:                        principal.UserID,
+			authenticationMethod:          principal.AuthenticationMethod,
+			authenticationTime:            principal.AuthenticationTime,
+			requester:                     ar,
+			hasPushedAuthorizationRequest: hasPushedAuthorizationRequest,
+			reauthenticationToken:         reauthenticationToken,
+			interactionID:                 interactionID,
+			requestParams:                 authorizeRequestParams(ar),
+			meta:                          requestMetaFromGin(c),
+		})
+		if txErr != nil {
+			return txErr
+		}
+		if authorization.RequiresInteraction {
+			return nil
+		}
+		response, txErr = h.provider.NewAuthorizeResponse(txCtx, ar, authorization.Session)
+		return txErr
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to authorize request", "error", err.Error())
@@ -89,13 +106,6 @@ func (h *authorizationHandler) authorize(c *gin.Context) {
 
 	if authorization.RequiresInteraction {
 		c.Redirect(http.StatusFound, "/interaction?interaction="+authorization.InteractionID)
-		return
-	}
-
-	response, err := h.provider.NewAuthorizeResponse(ctx, ar, authorization.Session)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create authorize response", "error", err.Error())
-		h.writeAuthorizeError(ctx, c, ar, err)
 		return
 	}
 
@@ -163,9 +173,32 @@ func (h *authorizationHandler) writeAuthorizeError(ctx context.Context, c *gin.C
 		slog.LogAttrs(ctx, slog.LevelDebug, "Fosite authorize error details", attrs...)
 	}
 
-	// Keep authorization policy denials in Pocket ID so users can see why access was refused
-	if errors.Is(err, fosite.ErrAccessDenied) {
+	// Keep authorization policy denials and invalidated-client errors in Pocket ID so users see why access was refused and removed callbacks never receive state
+	if errors.Is(err, fosite.ErrAccessDenied) || errors.Is(err, fosite.ErrInvalidClient) {
 		h.redirectToInteractionError(c, err)
+		return
+	}
+
+	// For CIMD and DCR clients, verify the original requested callback against current persisted metadata before redirecting any error and state
+	if pocketClient, ok := ar.GetClient().(Client); ok && (pocketClient.IsMetadataDocument() || pocketClient.isDynamicallyRegistered()) {
+		redirectURI := ar.GetRedirectURI()
+		if redirectURI == nil || h.authorizationService == nil || h.authorizationService.db == nil {
+			h.redirectToInteractionError(c, err)
+			return
+		}
+		var current model.OidcClient
+		if dbErr := h.authorizationService.db.WithContext(ctx).Where("id = ?", pocketClient.GetID()).First(&current).Error; dbErr != nil || (pocketClient.IsMetadataDocument() && current.MetadataExpiresAt == nil) {
+			h.redirectToInteractionError(c, err)
+			return
+		}
+		rawRedirect := ar.GetRequestForm().Get("redirect_uri")
+		matched := matchExactOrLoopbackRedirectURI([]string(current.CallbackURLs), rawRedirect)
+		if matched == nil || matched.String() != redirectURI.String() {
+			h.redirectToInteractionError(c, err)
+			return
+		}
+		h.relaxCSPForFormPost(c, ar)
+		h.provider.WriteAuthorizeError(ctx, c.Writer, ar, err)
 		return
 	}
 

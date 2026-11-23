@@ -1,5 +1,12 @@
 package claimmappingpolicy
 
+import "github.com/pocket-id/pocket-id/backend/internal/dto"
+
+type OidcClaimMappingPolicyClientDto struct {
+	dto.OidcClientMetaDataDto
+	ClaimMappingPolicyId string `json:"claimMappingPolicyId,omitempty"`
+}
+
 type OidcClaimMappingPolicyMetadataDto struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`

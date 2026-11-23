@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pocket-id/fosite"
+	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
@@ -33,6 +34,20 @@ type cimdClientResolver struct {
 var _ fosite.ClientResolver = (*cimdClientResolver)(nil)
 var _ fosite.CIMDClientPolicy = cimdPolicy{}
 
+type mismatchRevokingFetcher struct {
+	*fosite.DefaultCIMDFetcher
+	onMismatch func(ctx context.Context, clientID string, err error) error
+}
+
+func (f mismatchRevokingFetcher) Fetch(ctx context.Context, clientID string) (*fosite.ClientMetadataDocument, fosite.CIMDCachePolicy, error) {
+	doc, policy, err := f.DefaultCIMDFetcher.Fetch(ctx, clientID)
+	if errors.Is(err, fosite.ErrCIMDClientIDMismatch) && f.onMismatch != nil {
+		// Trigger revocation where the mismatch is produced so caller cancellation cannot mask cleanup
+		err = f.onMismatch(ctx, clientID, err)
+	}
+	return doc, policy, err
+}
+
 func newCIMDClientResolver(store *Store, config cimdResolverConfig) *cimdClientResolver {
 	options := []fosite.CIMDFetcherOption{
 		fosite.WithCIMDUserAgent("pocket-id/oidc-client-metadata-fetcher"),
@@ -47,22 +62,26 @@ func newCIMDClientResolver(store *Store, config cimdResolverConfig) *cimdClientR
 		options = append(options, fosite.WithCIMDTransportDecorator(config.transportDecorator))
 	}
 
-	policy := cimdPolicy{getURLAllowlist: config.getURLAllowlist, apiAccess: store.apiAccess}
-	return &cimdClientResolver{
-		resolver: &fosite.CIMDResolver{
-			Fetcher:                  fosite.NewDefaultCIMDFetcher(options...),
-			Cache:                    store,
-			Materializer:             store,
-			Policy:                   policy,
-			MaxConcurrentDiscoveries: 10,
-			// An outage of a client's host must not lock out its users, so the last document stays in use for a day
-			StaleIfUnavailable: 24 * time.Hour,
-			// A client ID that failed is left alone as long as a fetched document is kept at least
-			RetryAfterFailure: time.Minute,
-		},
+	policy := cimdPolicy{getURLAllowlist: config.getURLAllowlist, apiAccess: store.apiAccess, db: store.db}
+	r := &cimdClientResolver{
 		store:  store,
 		policy: policy,
 	}
+	r.resolver = &fosite.CIMDResolver{
+		Fetcher: mismatchRevokingFetcher{
+			DefaultCIMDFetcher: fosite.NewDefaultCIMDFetcher(options...),
+			onMismatch:         r.revokeOnClientIDMismatch,
+		},
+		Cache:                    store,
+		Materializer:             store,
+		Policy:                   policy,
+		MaxConcurrentDiscoveries: 10,
+		// An outage of a client's host must not lock out its users, so the last document stays in use for a day
+		StaleIfUnavailable: 24 * time.Hour,
+		// A client ID that failed is left alone as long as a fetched document is kept at least
+		RetryAfterFailure: time.Minute,
+	}
+	return r
 }
 
 func (r *cimdClientResolver) ResolveClient(ctx context.Context, clientID string, next fosite.ClientLookupFunc) (fosite.Client, error) {
@@ -85,30 +104,75 @@ func (r *cimdClientResolver) ResolveClient(ctx context.Context, clientID string,
 	return client, r.revokeOnClientIDMismatch(ctx, clientID, err)
 }
 
+type revokedMismatchError struct {
+	err error
+}
+
+func (e revokedMismatchError) Error() string { return e.err.Error() }
+func (e revokedMismatchError) Unwrap() error { return e.err }
+
 // revokeOnClientIDMismatch revokes what users granted to a client whose document no longer claims its client ID
 // The lookup error is returned either way, so the request still fails as an invalid client
 func (r *cimdClientResolver) revokeOnClientIDMismatch(ctx context.Context, clientID string, err error) error {
 	if !errors.Is(err, fosite.ErrCIMDClientIDMismatch) {
 		return err
 	}
-
-	var revoked int64
-	revokeErr := withTx(ctx, r.store.db, func(ctx context.Context) error {
-		var err error
-		revoked, err = r.store.revokeClientGrants(ctx, clientID)
+	// Ensure each observed mismatch runs cleanup once even when both the fetcher and outer resolver inspect the same error
+	var alreadyRevoked revokedMismatchError
+	if errors.As(err, &alreadyRevoked) {
 		return err
-	})
+	}
+
+	runRevocation := func(runCtx context.Context) (int64, error) {
+		var revoked int64
+		revokeErr := withTx(runCtx, r.store.db, func(txCtx context.Context) error {
+			var rErr error
+			revoked, rErr = r.store.revokeClientGrants(txCtx, clientID)
+			if rErr != nil {
+				return rErr
+			}
+			// Invalidate the cached metadata entry so the rejected document cannot be served fresh or via stale-on-outage fallback
+			return r.store.invalidateCIMDClientCache(txCtx, clientID)
+		})
+		return revoked, revokeErr
+	}
+
+	// Defer mismatch revocation until after an enclosing transaction rolls back so it never deadlocks or gets rolled back with the caller
+	if afterTxRollback(ctx, func(cleanCtx context.Context) {
+		cleanupCtx, cancel := context.WithTimeout(cleanCtx, 10*time.Second)
+		defer cancel()
+		revoked, revokeErr := runRevocation(cleanupCtx)
+		if revokeErr != nil {
+			slog.ErrorContext(cleanupCtx, "Failed to revoke client grants after metadata client ID mismatch",
+				slog.String("client_id", clientID),
+				slog.Any("error", revokeErr),
+			)
+			return
+		}
+		if revoked > 0 {
+			slog.WarnContext(cleanupCtx, "Revoked the user consent and tokens of a client whose metadata document no longer matches its client ID",
+				slog.String("client_id", clientID),
+			)
+		}
+	}) {
+		return revokedMismatchError{err: err}
+	}
+
+	// Detach mismatch cleanup from HTTP request cancellation so a canceled client cannot abort revocation or cache invalidation
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	revoked, revokeErr := runRevocation(cleanupCtx)
 	if revokeErr != nil {
-		return errors.Join(err, revokeErr)
+		return revokedMismatchError{err: errors.Join(err, revokeErr)}
 	}
 
 	// The mismatch is reported on every request for the client ID, also for one that never was a client
 	if revoked > 0 {
-		slog.WarnContext(ctx, "Revoked the user consent and tokens of a client whose metadata document no longer matches its client ID",
+		slog.WarnContext(cleanupCtx, "Revoked the user consent and tokens of a client whose metadata document no longer matches its client ID",
 			slog.String("client_id", clientID),
 		)
 	}
-	return err
+	return revokedMismatchError{err: err}
 }
 
 // RefreshMetadataClient forces a re-fetch of the metadata document for an already-cached CIMD client, bypassing the cache TTL
@@ -140,6 +204,7 @@ func (r *cimdClientResolver) RefreshMetadataClient(ctx context.Context, id strin
 type cimdPolicy struct {
 	getURLAllowlist func() []string
 	apiAccess       APIAccessProvider
+	db              *gorm.DB
 }
 
 func (p cimdPolicy) cimdURLAllowed(id string) bool {
@@ -158,7 +223,11 @@ func (p cimdPolicy) AllowCIMDClient(ctx context.Context, id string) error {
 	// A client ID is also the audience of the client's login tokens, so one that names an API could have them accepted there
 	// The issuer needs no check of its own, because it has no path and a client ID must have one
 	if p.apiAccess != nil {
-		_, apiExists, _, err := p.apiAccess.AllowedScopesForAudience(ctx, nil, id, strings.TrimRight(id, "/"), SubjectTypeUser)
+		var tx *gorm.DB
+		if p.db != nil {
+			tx = dbFromContext(ctx, p.db)
+		}
+		_, apiExists, _, err := p.apiAccess.AllowedScopesForAudience(ctx, tx, id, strings.TrimRight(id, "/"), SubjectTypeUser)
 		if err != nil {
 			return err
 		}

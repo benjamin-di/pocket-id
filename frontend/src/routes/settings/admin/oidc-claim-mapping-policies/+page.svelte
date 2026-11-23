@@ -4,7 +4,6 @@
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import OidcClaimMappingPolicyService from '#lib/services/oidc-claim-mapping-policy-service.ts';
-	import { axiosErrorToast } from '#lib/utils/error-util.ts';
 	import OidcClaimMappingPolicyForm from './oidc-claim-mapping-policy-form.svelte';
 	import { toast } from 'svelte-sonner';
 	import OidcClaimMappingPolicyList from './oidc-claim-mapping-policy-list.svelte';
@@ -17,15 +16,9 @@
 	const oidcClaimMappingPolicyService = new OidcClaimMappingPolicyService();
 
 	async function createClaimMappingPolicy(policy: OidcClaimMappingPolicyDto) {
-		await oidcClaimMappingPolicyService
-			.createClaimMappingPolicy(policy)
-			.then((createdPolicy) => {
-				toast.success(m.claim_mapping_policy_created_successfully());
-				goto(`/settings/admin/oidc-claim-mapping-policies/${createdPolicy.id}`);
-			})
-			.catch((e) => {
-				axiosErrorToast(e);
-			});
+		const createdPolicy = await oidcClaimMappingPolicyService.createClaimMappingPolicy(policy);
+		toast.success(m.claim_mapping_policy_created_successfully());
+		await goto(`/settings/admin/oidc-claim-mapping-policies/${createdPolicy.id}`);
 	}
 </script>
 
