@@ -1,5 +1,6 @@
 @Library('fleet-ci') _
 fleetPipeline(
+    parallelChecks: true,
     check: [
         'Backend': 'bash scripts/ci/check-backend.sh',
         'Frontend': 'bash scripts/ci/check-frontend.sh',
