@@ -1,6 +1,6 @@
 # Deployment fork
 
-`main` follows upstream. `fleet` is the deployable branch: the stable 2.19.2 release and the upstream contributions listed in
+`main` follows upstream. `fleet` is the deployable branch: the stable 2.19.3 release and the upstream contributions listed in
 [fork-patches.json](fork-patches.json). Application-specific configuration and
 identity data belong in the deployment repository, never here.
 
